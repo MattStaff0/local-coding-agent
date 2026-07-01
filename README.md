@@ -11,21 +11,21 @@ docs, understand a repo, suggest patches, and eventually run safe commands.
 
 ```text
 docs/*.md
-↓
+|
 split docs into chunks
-↓
+|
 embed each chunk with nomic-embed-text through Ollama
-↓
+|
 store chunks and embeddings in ChromaDB
-↓
+|
 embed the user's question
-↓
+|
 retrieve the most similar chunks
-↓
+|
 build a prompt with docs + chat history + question
-↓
+|
 ask qwen2.5-coder through Ollama
-↓
+|
 print the answer and retrieved sources
 ```
 
@@ -33,15 +33,15 @@ print the answer and retrieved sources
 
 ```text
 local-ai-coding-agent/
-├── docs/          # Markdown documentation to index
-├── src/
-│   ├── rag.py     # Source of truth for RAG logic
-│   ├── ingest.py  # Rebuilds the Chroma docs index
-│   └── ask.py     # Terminal chat interface
-├── data/          # Local generated/raw data, not committed
-├── chroma_db/     # Local Chroma vector database, not committed
-├── requirements.txt
-└── README.md
+|-- docs/          # Markdown documentation to index
+|-- src/
+|   |-- rag.py     # Source of truth for RAG logic
+|   |-- ingest.py  # Rebuilds the Chroma docs index
+|   `-- ask.py     # Terminal chat interface
+|-- data/          # Local generated/raw data, not committed
+|-- chroma_db/     # Local Chroma vector database, not committed
+|-- requirements.txt
+`-- README.md
 ```
 
 ## What Each Python File Does
