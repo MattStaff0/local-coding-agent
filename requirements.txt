@@ -1,0 +1,5 @@
+chromadb
+requests
+beautifulsoup4
+markdownify
+ollama
