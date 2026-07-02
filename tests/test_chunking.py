@@ -83,6 +83,21 @@ def test_yaml_frontmatter_is_not_indexed_as_a_chunk() -> None:
     assert "fetched" not in chunks[0]["text"]
 
 
+def test_stacked_frontmatter_blocks_are_all_skipped() -> None:
+    # A fetched raw-markdown doc can carry its own frontmatter (e.g. myst)
+    # right after the scraper's provenance block.
+    doc = (
+        "---\nurl: https://example.com/a.md\nfetched: 2026-07-02\n---\n\n"
+        "---\nmyst:\n  number_code_blocks: [\"python3\"]\n---\n\n"
+        "# Function Calling\n\nBody text."
+    )
+
+    chunks = chunk_markdown(doc)
+
+    assert [c["heading"] for c in chunks] == ["Function Calling"]
+    assert "myst" not in chunks[0]["text"]
+
+
 def test_oversized_section_splits_on_paragraph_boundaries() -> None:
     paragraphs = [f"Paragraph {i} " + ("word " * 40).strip() + "." for i in range(12)]
     doc = "# Big Section\n\n" + "\n\n".join(paragraphs)

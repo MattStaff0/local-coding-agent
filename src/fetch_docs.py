@@ -57,6 +57,12 @@ def html_to_markdown(html: str) -> str:
         for tag in soup.select(selector):
             tag.decompose()
 
+    # Self-link anchors with no visible text (e.g. Mintlify's zero-width-space
+    # heading links) would otherwise leak "[​](#...)" into heading text.
+    for anchor in soup.find_all("a", href=lambda h: h and h.startswith("#")):
+        if not anchor.get_text().strip("​ \t\n"):
+            anchor.decompose()
+
     content = soup
     for selector in _CONTENT_SELECTORS:
         found = soup.select_one(selector)
@@ -119,7 +125,12 @@ def fetch_source(source: str, urls: list[str], docs_dir: Path = DOCS_DIR) -> lis
             print(f"  FAILED {url}: {error}")
             continue
 
-        markdown = html_to_markdown(html)
+        # Pages already published as markdown need no conversion at all.
+        if urlparse(url).path.endswith((".md", ".txt")):
+            markdown = html
+        else:
+            markdown = html_to_markdown(html)
+
         path = write_doc(
             docs_dir=docs_dir,
             source=source,

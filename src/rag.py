@@ -171,9 +171,15 @@ def _pack_section(path: str, body: str, chunk_size: int) -> list[dict[str, str]]
 
 
 def _strip_frontmatter(text: str) -> str:
-    """Drop a leading YAML frontmatter block (fetch provenance, not doc content)."""
-    match = re.match(r"\A---\n.*?\n---\n", text, flags=re.DOTALL)
-    return text[match.end() :] if match else text
+    """Drop leading YAML frontmatter blocks (fetch provenance, not doc content).
+
+    Fetched raw-markdown docs can stack their own frontmatter right after the
+    scraper's provenance block, so keep stripping while one leads the text.
+    """
+    while match := re.match(r"\A---\n.*?\n---\n\s*", text, flags=re.DOTALL):
+        text = text[match.end() :]
+
+    return text
 
 
 def chunk_markdown(text: str, chunk_size: int = 1500) -> list[dict[str, str]]:

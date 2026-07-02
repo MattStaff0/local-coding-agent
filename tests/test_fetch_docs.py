@@ -137,6 +137,21 @@ def test_html_to_markdown_drops_images_and_collapses_blank_lines() -> None:
     assert "# Tensors" in markdown
 
 
+def test_html_to_markdown_strips_invisible_anchor_links_in_headings() -> None:
+    # Mintlify-style docs put an anchor link holding only a zero-width space
+    # inside every heading; it must not leak into the markdown heading text.
+    html = (
+        '<main><h2><a href="#calling-a-single-tool">​</a>'
+        "Calling a single tool</h2><p>Body.</p></main>"
+    )
+
+    markdown = html_to_markdown(html)
+
+    assert "## Calling a single tool" in markdown
+    assert "#calling-a-single-tool" not in markdown
+    assert "​" not in markdown
+
+
 def test_fetch_page_defaults_to_utf8_when_no_charset_declared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -236,6 +251,24 @@ def test_fetch_source_writes_one_file_per_url(
     assert [p.name for p in written] == ["a.md", "b.md"]
     assert "alpha" in (tmp_path / "demo" / "a.md").read_text(encoding="utf-8")
     assert "beta" in (tmp_path / "demo" / "b.md").read_text(encoding="utf-8")
+
+
+def test_fetch_source_saves_raw_markdown_urls_without_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = "# Function Calling\n\n```python\ntools = [...]  # not html\n```\n"
+    monkeypatch.setattr(fetch_docs, "fetch_page", lambda url: raw)
+
+    written = fetch_source(
+        "qwen",
+        ["https://raw.githubusercontent.com/QwenLM/Qwen3/main/docs/function_call.md"],
+        docs_dir=tmp_path,
+    )
+
+    text = written[0].read_text(encoding="utf-8")
+    # The markdown body is preserved exactly (after the frontmatter block).
+    assert text.endswith(raw.strip() + "\n")
+    assert written[0].name == "function-call.md"
 
 
 def test_fetch_source_skips_failed_pages_and_continues(

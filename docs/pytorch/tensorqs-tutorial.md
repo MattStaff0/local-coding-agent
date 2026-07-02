@@ -1,6 +1,6 @@
 ---
 url: https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
-fetched: 2026-07-01
+fetched: 2026-07-02
 ---
 
 Note
