@@ -330,24 +330,60 @@ def format_history(history: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def chunk_label(number: int, metadata: dict[str, Any]) -> str:
+    """Label one retrieved chunk, like '[1] docs/pytorch/tensors.md § Tensors'."""
+    path = metadata.get("path", metadata.get("source", "unknown"))
+    heading = metadata.get("heading", "")
+
+    label = f"[{number}] {path}"
+    if heading:
+        label += f" § {heading}"
+
+    return label
+
+
+def source_legend(metadatas: list[dict[str, Any]]) -> list[str]:
+    """Map citation numbers to their source file and heading, for display."""
+    return [chunk_label(i, metadata) for i, metadata in enumerate(metadatas, start=1)]
+
+
+def format_context(
+    context_chunks: list[str],
+    metadatas: list[dict[str, Any]] | None = None,
+) -> str:
+    """Join retrieved chunks, numbering and labeling them when metadata exists."""
+    if not metadatas:
+        return "\n\n---\n\n".join(context_chunks)
+
+    blocks = []
+    for i, (chunk, metadata) in enumerate(zip(context_chunks, metadatas), start=1):
+        blocks.append(f"{chunk_label(i, metadata)}\n{chunk}")
+
+    return "\n\n---\n\n".join(blocks)
+
+
 def build_prompt(
     question: str,
     context_chunks: list[str],
     history: list[dict[str, str]] | None = None,
+    metadatas: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the full prompt sent to the chat model."""
-    context = "\n\n---\n\n".join(context_chunks)
+    context = format_context(context_chunks, metadatas)
     history_text = format_history(history or [])
 
     # This is where RAG happens: retrieved docs are inserted into the prompt.
+    # The rules force doc-grounded answers: a small local model should teach
+    # from the retrieved documentation, never from its own training data.
     return f"""
-You are a local coding tutor. Answer the user's question using the provided documentation context.
+You are a local coding tutor. Answer the user's question using ONLY the numbered documentation context below.
 
 Rules:
-- Use the context first.
-- If the context does not contain the answer, say what is missing.
+- Answer only from the documentation context. Do not use your own general knowledge.
+- Cite the context you used with its number, like [1] or [2], right after each claim.
+- If the context does not fully answer the question, say exactly what is missing or not covered, and do not guess.
 - Be clear and practical.
-- Include code examples when helpful.
+- Include code examples when the context contains them.
 - Use the conversation history only to understand follow-up questions.
 
 Conversation history:
@@ -385,7 +421,7 @@ def answer_question(
     docs = results["documents"][0]
     metadatas = results["metadatas"][0]
 
-    prompt = build_prompt(question, docs, history or [])
+    prompt = build_prompt(question, docs, history or [], metadatas)
     answer = ask_model(prompt)
 
     return answer, metadatas

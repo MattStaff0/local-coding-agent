@@ -23,11 +23,12 @@ embed the user's question
 |
 retrieve the most similar chunks
 |
-build a prompt with docs + chat history + question
+build a prompt with numbered doc chunks + chat history + question
+(the model must answer ONLY from the docs and cite chunks like [1])
 |
 ask qwen2.5-coder through Ollama
 |
-print the answer and retrieved sources
+print the answer plus a source legend: [n] -> file § heading
 ```
 
 ## Project Structure
@@ -236,9 +237,7 @@ Reingest after:
 
 Good next improvements:
 
-1. Add more official docs slowly.
-2. Tighten the prompt for stricter doc-grounded answers.
-3. Add better source citations in answers.
-4. Add a docs scraper/converter for selected official pages.
-5. Add repo indexing for local source code.
-6. Add a configurable chat model, such as switching between 3B and 7B.
+1. Add more official docs slowly (grow `sources.yaml`).
+2. Add repo indexing for local source code.
+3. Add a configurable chat model, such as switching between 3B and 12B.
+4. Save chat history to disk.

@@ -1,16 +1,15 @@
 import sys
 from typing import Any
 
-from rag import answer_question, list_sources
+from rag import answer_question, list_sources, source_legend
 
 
 def print_sources(metadatas: list[dict[str, Any]]) -> None:
-    """Show which chunks Chroma retrieved for the current question."""
-    print("\nRetrieved sources:")
+    """Show the citation legend: which chunk each [n] in the answer refers to."""
+    print("\nSources:")
 
-    for metadata in metadatas:
-        path = metadata.get("path", metadata["source"])
-        print(f"- [{metadata['source']}] {path} chunk {metadata['chunk_index']}")
+    for line in source_legend(metadatas):
+        print(f"  {line}")
 
 
 def apply_source_command(
