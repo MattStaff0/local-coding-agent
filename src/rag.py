@@ -59,6 +59,17 @@ def reset_collection(client: chromadb.PersistentClient):
     return client.create_collection(name=COLLECTION_NAME)
 
 
+def source_for(doc_file: Path, docs_dir: Path = DOCS_DIR) -> str:
+    """Name the source collection a doc belongs to: its top folder under docs/."""
+    relative = doc_file.relative_to(docs_dir)
+
+    # Files sitting directly in docs/ have no source folder.
+    if len(relative.parts) == 1:
+        return "general"
+
+    return relative.parts[0]
+
+
 def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) -> str:
     """Create a stable Chroma id for a document chunk."""
     relative_path = doc_file.relative_to(docs_dir).as_posix()
@@ -96,7 +107,8 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
             embeddings.append(embed(chunk))
             metadatas.append(
                 {
-                    "source": str(doc_file),
+                    "source": source_for(doc_file, docs_dir),
+                    "path": str(doc_file),
                     "chunk_index": i,
                 }
             )
@@ -111,8 +123,15 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
     return len(documents)
 
 
-def retrieve(question: str, n_results: int = 4) -> dict[str, Any]:
-    """Find the most relevant indexed doc chunks for a user question."""
+def retrieve(
+    question: str,
+    n_results: int = 4,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Find the most relevant indexed doc chunks for a user question.
+
+    Pass a source name (a top-level docs/ folder) to search only that source.
+    """
     client = get_client()
     collection = client.get_collection(name=COLLECTION_NAME)
 
@@ -122,7 +141,18 @@ def retrieve(question: str, n_results: int = 4) -> dict[str, Any]:
     return collection.query(
         query_embeddings=[question_embedding],
         n_results=n_results,
+        where={"source": source} if source else None,
     )
+
+
+def list_sources() -> list[str]:
+    """List the source names currently present in the index."""
+    client = get_client()
+    collection = client.get_collection(name=COLLECTION_NAME)
+
+    records = collection.get(include=["metadatas"])
+
+    return sorted({metadata["source"] for metadata in records["metadatas"]})
 
 
 def format_history(history: list[dict[str, str]]) -> str:
@@ -186,9 +216,10 @@ def ask_model(prompt: str) -> str:
 def answer_question(
     question: str,
     history: list[dict[str, str]] | None = None,
+    source: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Run the full RAG question-answer flow."""
-    results = retrieve(question)
+    """Run the full RAG question-answer flow, optionally scoped to one source."""
+    results = retrieve(question, source=source)
 
     # Chroma returns a list per query. We only send one query at a time, so [0].
     docs = results["documents"][0]

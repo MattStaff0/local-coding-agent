@@ -184,6 +184,14 @@ What does the forward method do?
 How do Python lists work?
 ```
 
+Scope answers to one documentation source (a top-level `docs/` folder):
+
+```text
+/sources          list indexed sources
+/source pytorch   answer only from docs/pytorch/
+/source all       search everything again
+```
+
 Exit chat:
 
 ```text
