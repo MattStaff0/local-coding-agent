@@ -35,9 +35,12 @@ print the answer and retrieved sources
 local-ai-coding-agent/
 |-- docs/          # Markdown documentation to index
 |-- src/
-|   |-- rag.py     # Source of truth for RAG logic
-|   |-- ingest.py  # Rebuilds the Chroma docs index
-|   `-- ask.py     # Terminal chat interface
+|   |-- rag.py        # Source of truth for RAG logic
+|   |-- ingest.py     # Rebuilds the Chroma docs index
+|   |-- ask.py        # Terminal chat interface
+|   `-- fetch_docs.py # Fetches official docs into docs/<source>/
+|-- tests/         # Pytest suite (no Ollama needed to run it)
+|-- sources.yaml   # Registry of doc sources and URLs to fetch
 |-- data/          # Local generated/raw data, not committed
 |-- chroma_db/     # Local Chroma vector database, not committed
 |-- requirements.txt
@@ -109,6 +112,30 @@ Pull the models:
 ollama pull nomic-embed-text
 ollama pull qwen2.5-coder:3b
 ```
+
+## Fetch Official Docs
+
+`sources.yaml` maps a source name to the doc pages to download. Each source
+becomes a folder under `docs/`:
+
+```yaml
+pytorch:
+  - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
+python:
+  - https://docs.python.org/3/tutorial/datastructures.html
+```
+
+Fetch everything in the registry (or just one source by name):
+
+```powershell
+python src\fetch_docs.py
+python src\fetch_docs.py pytorch
+```
+
+Pages are converted from HTML to markdown (navigation, footers, and scripts are
+stripped; the main article content is kept) and saved as
+`docs/<source>/<page-slug>.md` with the original URL and fetch date in a small
+frontmatter block. Re-run ingestion afterwards to index the new files.
 
 ## Add Docs
 

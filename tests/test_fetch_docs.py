@@ -87,6 +87,82 @@ def test_html_to_markdown_uses_body_when_no_main_element() -> None:
     assert "Lists hold items." in markdown
 
 
+def test_html_to_markdown_prefers_article_over_surrounding_main_chrome() -> None:
+    html = """
+    <main>
+      <div>Rate this Page ★ ★ ★</div>
+      <article><h1>Build Model</h1><p>Layers stack up.</p></article>
+    </main>
+    """
+
+    markdown = html_to_markdown(html)
+
+    assert "# Build Model" in markdown
+    assert "Rate this Page" not in markdown
+
+
+def test_html_to_markdown_strips_navigation_roles_and_headerlinks() -> None:
+    html = """
+    <body>
+      <div role="navigation"><a href="/">index</a> | <a href="/mod">modules</a></div>
+      <div role="main">
+        <h1>Data Structures<a class="headerlink" href="#ds">¶</a></h1>
+        <p>Lists hold items.</p>
+      </div>
+    </body>
+    """
+
+    markdown = html_to_markdown(html)
+
+    assert "# Data Structures" in markdown
+    assert "¶" not in markdown
+    assert "modules" not in markdown
+
+
+def test_html_to_markdown_drops_images_and_collapses_blank_lines() -> None:
+    html = """
+    <main>
+      <p><img src="logo.svg" alt="logo"></p>
+      <h1>Tensors</h1>
+      <p><img src="colab.svg"></p>
+      <p>Tensors are arrays.</p>
+    </main>
+    """
+
+    markdown = html_to_markdown(html)
+
+    assert "logo" not in markdown
+    assert ".svg" not in markdown
+    assert "\n\n\n" not in markdown
+    assert "# Tensors" in markdown
+
+
+def test_fetch_page_defaults_to_utf8_when_no_charset_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = FakeResponse("placeholder")
+    response.headers = {"content-type": "text/html"}
+    response.encoding = "ISO-8859-1"
+
+    monkeypatch.setattr(fetch_docs.requests, "get", lambda url, **kwargs: response)
+
+    fetch_page("https://example.com/page.html")
+
+    assert response.encoding == "utf-8"
+
+
+def test_fetch_page_keeps_declared_charset(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = FakeResponse("placeholder")
+    response.headers = {"content-type": "text/html; charset=latin-1"}
+    response.encoding = "latin-1"
+
+    monkeypatch.setattr(fetch_docs.requests, "get", lambda url, **kwargs: response)
+
+    fetch_page("https://example.com/page.html")
+
+    assert response.encoding == "latin-1"
+
+
 def test_write_doc_creates_source_directory_with_frontmatter(tmp_path: Path) -> None:
     path = write_doc(
         docs_dir=tmp_path,
@@ -110,6 +186,8 @@ class FakeResponse:
     def __init__(self, text: str, status_error: Exception | None = None) -> None:
         self.text = text
         self._status_error = status_error
+        self.headers = {"content-type": "text/html; charset=utf-8"}
+        self.encoding = "utf-8"
 
     def raise_for_status(self) -> None:
         if self._status_error:

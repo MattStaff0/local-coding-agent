@@ -38,7 +38,12 @@ def slug_for_url(url: str) -> str:
 
 
 # Page chrome that should never end up in the markdown docs.
-_STRIP_TAGS = ["nav", "footer", "header", "script", "style", "aside"]
+_STRIP_TAGS = ["nav", "footer", "header", "script", "style", "aside", "img"]
+_STRIP_SELECTORS = ["[role=navigation]", "[role=search]", "a.headerlink"]
+
+# Most-specific first: sphinx-style sites wrap the real content in <article>
+# or [role=main], while <main> often still contains rating/colab chrome.
+_CONTENT_SELECTORS = ["article", "[role=main]", "main", "body"]
 
 
 def html_to_markdown(html: str) -> str:
@@ -48,9 +53,23 @@ def html_to_markdown(html: str) -> str:
     for tag in soup(_STRIP_TAGS):
         tag.decompose()
 
-    content = soup.find("main") or soup.find("article") or soup.body or soup
+    for selector in _STRIP_SELECTORS:
+        for tag in soup.select(selector):
+            tag.decompose()
 
-    return markdownify(str(content), heading_style="ATX", code_language="").strip()
+    content = soup
+    for selector in _CONTENT_SELECTORS:
+        found = soup.select_one(selector)
+        if found:
+            content = found
+            break
+
+    markdown = markdownify(str(content), heading_style="ATX", code_language="")
+
+    # Dropping nav/images leaves runs of empty lines; keep at most one blank.
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+
+    return markdown.strip()
 
 
 def write_doc(
@@ -80,6 +99,12 @@ def fetch_page(url: str) -> str:
         headers={"User-Agent": USER_AGENT},
     )
     response.raise_for_status()
+
+    # Servers that omit the charset make requests guess ISO-8859-1, which
+    # mangles UTF-8 pages (e.g. docs.python.org). Modern doc sites are UTF-8.
+    if "charset" not in response.headers.get("content-type", "").lower():
+        response.encoding = "utf-8"
+
     return response.text
 
 
