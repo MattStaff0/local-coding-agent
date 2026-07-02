@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from typing import Any
 
 import ollama
 
@@ -101,3 +103,58 @@ def dispatch_tool(name: str, arguments: dict, root: Path) -> str:
         return f"Tool error: {error}"
 
     return f"Unknown tool '{name}'. Available: list_files, grep, read_file."
+
+
+def run_agent(
+    question: str,
+    root: Path,
+    max_iterations: int = MAX_ITERATIONS,
+) -> tuple[str, list[str]]:
+    """Answer a codebase question by letting the model drive search tools.
+
+    Returns (answer, trace) where trace lists every tool call made, so the
+    user can see how the agent found its answer.
+    """
+    messages: list[Any] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
+    trace: list[str] = []
+    last_signature: str | None = None
+
+    for _ in range(max_iterations):
+        response = ollama.chat(
+            model=AGENT_MODEL, messages=messages, tools=TOOL_SCHEMAS
+        )
+        message = response["message"]
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+            return message["content"], trace
+
+        messages.append(message)
+
+        for call in tool_calls:
+            name = call["function"]["name"]
+            arguments = dict(call["function"]["arguments"])
+            signature = f"{name}:{json.dumps(arguments, sort_keys=True, default=str)}"
+
+            if signature == last_signature:
+                # A small model can get stuck re-issuing one call forever;
+                # answering it with a nudge breaks the loop cheaply.
+                result = (
+                    "You already ran exactly this call. Use the previous "
+                    "result, or answer with what you have."
+                )
+            else:
+                result = dispatch_tool(name, arguments, root)
+
+            last_signature = signature
+            trace.append(f"{name}({arguments})")
+            messages.append({"role": "tool", "tool_name": name, "content": result})
+
+    return (
+        "Stopped after reaching the tool-call limit without a final answer. "
+        "Try asking a more specific question.",
+        trace,
+    )

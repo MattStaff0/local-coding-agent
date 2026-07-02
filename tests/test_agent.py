@@ -61,3 +61,104 @@ def test_every_schema_is_a_complete_function_definition() -> None:
         names.add(function["name"])
 
     assert names == {"list_files", "grep", "read_file"}
+
+
+def scripted_chat(monkeypatch: pytest.MonkeyPatch, responses: list[dict]) -> list[dict]:
+    """Replace ollama.chat with a script; returns the recorded calls."""
+    calls: list[dict] = []
+
+    def fake_chat(model: str, messages: list, tools: list | None = None) -> dict:
+        calls.append({"model": model, "messages": list(messages), "tools": tools})
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+    return calls
+
+
+def answer(content: str) -> dict:
+    return {"message": {"role": "assistant", "content": content}}
+
+
+def tool_call(name: str, arguments: dict) -> dict:
+    return {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": name, "arguments": arguments}}],
+        }
+    }
+
+
+def tool_messages(call: dict) -> list[dict]:
+    return [m for m in call["messages"] if m.get("role") == "tool"]
+
+
+def test_direct_answer_needs_no_tools(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    scripted_chat(monkeypatch, [answer("It is a RAG project.")])
+
+    result, trace = agent.run_agent("what is this?", root=project)
+
+    assert result == "It is a RAG project."
+    assert trace == []
+
+
+def test_tool_results_are_sent_back_to_the_model(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    calls = scripted_chat(
+        monkeypatch,
+        [
+            tool_call("grep", {"pattern": "def retrieve"}),
+            answer("retrieve() is defined at app.py:1."),
+        ],
+    )
+
+    result, trace = agent.run_agent("where is retrieve?", root=project)
+
+    assert "app.py:1" in result
+    assert "app.py:1" in tool_messages(calls[1])[0]["content"]
+    assert trace == ["grep({'pattern': 'def retrieve'})"]
+
+
+def test_loop_stops_at_max_iterations(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    scripted_chat(monkeypatch, [tool_call("list_files", {})] * 3)
+
+    result, trace = agent.run_agent("q", root=project, max_iterations=3)
+
+    assert "Stopped" in result
+    assert len(trace) == 3
+
+
+def test_repeated_identical_call_gets_a_nudge_not_a_rerun(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    calls = scripted_chat(
+        monkeypatch,
+        [
+            tool_call("grep", {"pattern": "x"}),
+            tool_call("grep", {"pattern": "x"}),
+            answer("done"),
+        ],
+    )
+
+    result, trace = agent.run_agent("q", root=project)
+
+    assert result == "done"
+    assert "already" in tool_messages(calls[2])[-1]["content"]
+
+
+def test_unknown_tool_calls_are_reported_to_the_model(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    calls = scripted_chat(
+        monkeypatch,
+        [tool_call("delete_everything", {}), answer("ok")],
+    )
+
+    agent.run_agent("q", root=project)
+
+    assert "Unknown tool" in tool_messages(calls[1])[0]["content"]
