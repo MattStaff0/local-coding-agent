@@ -109,9 +109,38 @@ def test_oversized_section_splits_on_paragraph_boundaries() -> None:
         assert chunk["heading"] == "Big Section"
         assert chunk["text"].startswith("Big Section")
         assert len(chunk["text"]) <= 600
-        # Paragraphs are never cut mid-sentence: each ends where one ends.
+        # Paragraphs that fit the budget are kept whole: each chunk ends at a
+        # paragraph end. (A single paragraph bigger than the budget falls back
+        # to character windows — covered separately below.)
         assert chunk["text"].rstrip().endswith(".")
 
     # Neighboring chunks overlap by one paragraph so context is not lost.
     first_tail = chunks[0]["text"].strip().split("\n\n")[-1]
     assert first_tail in chunks[1]["text"]
+
+
+def test_code_fence_bigger_than_chunk_size_is_kept_whole() -> None:
+    fence = "```python\n" + "\n".join(f"line_{i} = {i}" for i in range(60)) + "\n```"
+    doc = f"# Big Example\n\nIntro.\n\n{fence}\n\nOutro."
+
+    chunks = chunk_markdown(doc, chunk_size=300)
+
+    fence_chunks = [c for c in chunks if "```python" in c["text"]]
+    assert len(fence_chunks) == 1
+    # Both delimiters and every line live in one (oversized) chunk.
+    assert fence_chunks[0]["text"].count("```") == 2
+    assert "line_0 = 0" in fence_chunks[0]["text"]
+    assert "line_59 = 59" in fence_chunks[0]["text"]
+
+
+def test_single_paragraph_bigger_than_budget_splits_into_character_windows() -> None:
+    doc = "# Wall\n\n" + "x" * 2000
+
+    chunks = chunk_markdown(doc, chunk_size=300)
+
+    assert len(chunks) > 1
+    assert all(len(c["text"]) <= 300 for c in chunks)
+    assert all(c["heading"] == "Wall" for c in chunks)
+    # No content is lost across the window splits.
+    recombined = "".join(c["text"].removeprefix("Wall\n\n") for c in chunks)
+    assert "x" * 100 in recombined

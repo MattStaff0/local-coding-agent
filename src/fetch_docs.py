@@ -2,7 +2,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 import yaml
@@ -20,13 +20,23 @@ USER_AGENT = "local-coding-agent-docs-fetcher (personal RAG study tool)"
 def load_sources(registry_path: Path) -> dict[str, list[str]]:
     """Read the sources registry mapping source names to lists of doc URLs."""
     text = registry_path.read_text(encoding="utf-8")
-    data = yaml.safe_load(text)
+    data = yaml.safe_load(text) or {}
+
+    for name, urls in data.items():
+        # A bare URL instead of a list would iterate per character and produce
+        # dozens of one-letter "pages" — fail with a pointed message instead.
+        if isinstance(urls, str) or not isinstance(urls, list):
+            raise ValueError(
+                f"Source '{name}' in {registry_path} must be a list of URLs, "
+                f"got {type(urls).__name__}"
+            )
+
     return {name: list(urls) for name, urls in data.items()}
 
 
 def slug_for_url(url: str) -> str:
     """Turn a doc URL into a safe markdown filename stem."""
-    path = urlparse(url).path
+    path = unquote(urlparse(url).path)
     segment = Path(path).stem if path.strip("/") else ""
 
     if not segment:
@@ -98,7 +108,7 @@ def write_doc(
 
 
 def fetch_page(url: str) -> str:
-    """Download one doc page and return its raw HTML."""
+    """Download one doc page: HTML, or raw markdown for .md/.txt URLs."""
     response = requests.get(
         url,
         timeout=REQUEST_TIMEOUT,
@@ -114,15 +124,47 @@ def fetch_page(url: str) -> str:
     return response.text
 
 
-def fetch_source(source: str, urls: list[str], docs_dir: Path = DOCS_DIR) -> list[Path]:
-    """Fetch every URL for one source; a failed page is reported, not fatal."""
+def _unique_slug(url: str, taken: set[str]) -> str:
+    """Pick a slug that no other URL in this source already claimed."""
+    slug = slug_for_url(url)
+
+    if slug in taken:
+        # Same final segment (e.g. two .../index.html pages): pull in the
+        # parent path segment so both files survive with meaningful names.
+        parent = Path(unquote(urlparse(url).path)).parent.name
+        parent_slug = re.sub(r"[^a-z0-9]+", "-", parent.lower()).strip("-")
+        if parent_slug:
+            slug = f"{parent_slug}-{slug}"
+
+    counter = 2
+    while slug in taken:
+        slug = f"{slug_for_url(url)}-{counter}"
+        counter += 1
+
+    taken.add(slug)
+    return slug
+
+
+def fetch_source(
+    source: str,
+    urls: list[str],
+    docs_dir: Path = DOCS_DIR,
+) -> tuple[list[Path], list[str]]:
+    """Fetch every URL for one source; a failed page is reported, not fatal.
+
+    Returns the written file paths and the URLs that failed. Only network
+    failures are skipped — a bug in our own code still crashes loudly.
+    """
     written = []
+    failed = []
+    taken_slugs: set[str] = set()
 
     for url in urls:
         try:
             html = fetch_page(url)
-        except Exception as error:
+        except requests.RequestException as error:
             print(f"  FAILED {url}: {error}")
+            failed.append(url)
             continue
 
         # Pages already published as markdown need no conversion at all.
@@ -134,7 +176,7 @@ def fetch_source(source: str, urls: list[str], docs_dir: Path = DOCS_DIR) -> lis
         path = write_doc(
             docs_dir=docs_dir,
             source=source,
-            slug=slug_for_url(url),
+            slug=_unique_slug(url, taken_slugs),
             markdown=markdown,
             url=url,
             fetched=date.today().isoformat(),
@@ -142,7 +184,7 @@ def fetch_source(source: str, urls: list[str], docs_dir: Path = DOCS_DIR) -> lis
         print(f"  {url} -> {path}")
         written.append(path)
 
-    return written
+    return written, failed
 
 
 def main() -> None:
@@ -161,11 +203,22 @@ def main() -> None:
         raise SystemExit(1)
 
     total = 0
+    all_failed: list[str] = []
     for name in requested:
         print(f"Fetching source '{name}' ({len(sources[name])} pages)")
-        total += len(fetch_source(name, sources[name]))
+        written, failed = fetch_source(name, sources[name])
+        total += len(written)
+        all_failed.extend(failed)
 
     print(f"Done. Wrote {total} docs. Re-run 'python src/ingest.py' to index them.")
+
+    # Per-page FAILED lines scroll away in a long run; summarize and exit
+    # nonzero so an overnight fetch can't fail silently.
+    if all_failed:
+        print(f"WARNING: {len(all_failed)} pages failed:")
+        for url in all_failed:
+            print(f"  - {url}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,12 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
+import chromadb.errors
 import ollama
+
+
+class EmptyIndexError(RuntimeError):
+    """Raised when retrieval finds nothing — usually an empty or stale index."""
 
 
 # These constants are the main knobs for the RAG system.
@@ -17,7 +22,15 @@ MAX_HISTORY_TURNS = 6
 
 
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
-    """Split a long document into overlapping chunks for embedding."""
+    """Split long text into overlapping fixed-size chunks.
+
+    Since chunk_markdown landed this is only the character-window fallback for
+    a single paragraph that exceeds the chunk budget.
+    """
+    # An overlap >= chunk_size would make the loop step backwards (or spin
+    # forever), so cap it at half a chunk.
+    overlap = min(overlap, chunk_size // 2)
+
     chunks = []
     start = 0
 
@@ -123,7 +136,11 @@ def _split_blocks(body: str) -> list[str]:
 
 
 def _pack_section(path: str, body: str, chunk_size: int) -> list[dict[str, str]]:
-    """Pack one section's paragraphs into chunks that fit chunk_size."""
+    """Pack one section's paragraphs into chunks that fit chunk_size.
+
+    Exception: an oversized code fence is kept whole, so that one chunk may
+    exceed chunk_size rather than shred a code example.
+    """
     prefix = f"{path}\n\n" if path else ""
     budget = max(chunk_size - len(prefix), 1)
 
@@ -216,16 +233,17 @@ def reset_collection(client: chromadb.PersistentClient):
     """Delete and recreate the docs collection so ingestion starts clean."""
     try:
         client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        # Chroma raises if the collection does not exist yet. That is fine on
-        # the first run because there is nothing to delete.
+    except chromadb.errors.NotFoundError:
+        # First run: there is no collection to delete yet. Any other error
+        # (locked/corrupt database) must stay loud, not resurface later as a
+        # confusing "collection already exists" on the create below.
         pass
 
     return client.create_collection(name=COLLECTION_NAME)
 
 
 def source_for(doc_file: Path, docs_dir: Path = DOCS_DIR) -> str:
-    """Name the source collection a doc belongs to: its top folder under docs/."""
+    """Name the source a doc belongs to: its top-level folder under docs/."""
     relative = doc_file.relative_to(docs_dir)
 
     # Files sitting directly in docs/ have no source folder.
@@ -243,15 +261,18 @@ def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) ->
 
 
 def index_docs(docs_dir: Path = DOCS_DIR) -> int:
-    """Read markdown docs, embed every chunk, and store them in Chroma."""
-    client = get_client()
-    collection = reset_collection(client)
+    """Read markdown docs, embed every chunk, and store them in Chroma.
 
-    # rglob lets us support docs in folders later, like docs/python/venv.md.
+    All reading, chunking, and embedding happens BEFORE the old collection is
+    touched, so a failed run (bad file, Ollama down) never leaves an empty
+    index behind.
+    """
+    # rglob picks up the per-source folders fetch_docs.py creates,
+    # like docs/pytorch/ and docs/python/.
     doc_files = sorted(docs_dir.rglob("*.md"))
 
     if not doc_files:
-        print(f"No docs found in {docs_dir}/")
+        print(f"No docs found in {docs_dir}/ — keeping the existing index.")
         return 0
 
     ids = []
@@ -266,7 +287,8 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
         print(f"Processing {doc_file.name}: {len(chunks)} chunks")
 
         for i, chunk in enumerate(chunks):
-            # Each chunk needs its own id, original text, embedding, and metadata.
+            # Each chunk needs its own id, breadcrumb-prefixed text, embedding,
+            # and metadata.
             ids.append(chunk_id_for(doc_file, i, docs_dir))
             documents.append(chunk["text"])
             embeddings.append(embed(chunk["text"]))
@@ -278,6 +300,10 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
                     "chunk_index": i,
                 }
             )
+
+    # Everything embedded successfully — only now is it safe to swap the index.
+    client = get_client()
+    collection = reset_collection(client)
 
     collection.add(
         ids=ids,
@@ -426,6 +452,14 @@ def answer_question(
     # Chroma returns a list per query. We only send one query at a time, so [0].
     docs = results["documents"][0]
     metadatas = results["metadatas"][0]
+
+    if not docs:
+        # Without this, the grounded prompt would make the model answer "the
+        # docs don't cover this" to everything and the empty index stays hidden.
+        raise EmptyIndexError(
+            "Retrieval returned no chunks — the index may be empty or stale. "
+            "Run 'python src/ingest.py' to rebuild it."
+        )
 
     prompt = build_prompt(question, docs, history or [], metadatas)
     answer = ask_model(prompt)

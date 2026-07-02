@@ -1,6 +1,8 @@
+import sys
 from pathlib import Path
 
 import pytest
+import requests
 
 import fetch_docs
 from fetch_docs import (
@@ -40,14 +42,31 @@ def test_load_sources_rejects_missing_file(tmp_path: Path) -> None:
         load_sources(tmp_path / "missing.yaml")
 
 
+def test_load_sources_rejects_scalar_url(tmp_path: Path) -> None:
+    # A common YAML typo: a bare URL instead of a list. Without validation it
+    # would explode into per-character "pages".
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("pytorch: https://example.com/a.html\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="pytorch"):
+        load_sources(registry)
+
+
+def test_load_sources_empty_file_means_no_sources(tmp_path: Path) -> None:
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("", encoding="utf-8")
+
+    assert load_sources(registry) == {}
+
+
 def test_slug_for_url_uses_last_path_segment() -> None:
     url = "https://docs.python.org/3/tutorial/datastructures.html"
     assert slug_for_url(url) == "datastructures"
 
 
-def test_slug_for_url_handles_trailing_slash_and_odd_characters() -> None:
+def test_slug_for_url_decodes_percent_escapes() -> None:
     url = "https://example.com/guide/My%20Page/"
-    assert slug_for_url(url) == "my-20page"
+    assert slug_for_url(url) == "my-page"
 
 
 def test_slug_for_url_falls_back_to_index_for_bare_domain() -> None:
@@ -246,11 +265,34 @@ def test_fetch_source_writes_one_file_per_url(
     }
     monkeypatch.setattr(fetch_docs, "fetch_page", lambda url: pages[url])
 
-    written = fetch_source("demo", list(pages), docs_dir=tmp_path)
+    written, failed = fetch_source("demo", list(pages), docs_dir=tmp_path)
 
     assert [p.name for p in written] == ["a.md", "b.md"]
+    assert failed == []
     assert "alpha" in (tmp_path / "demo" / "a.md").read_text(encoding="utf-8")
     assert "beta" in (tmp_path / "demo" / "b.md").read_text(encoding="utf-8")
+
+
+def test_fetch_source_disambiguates_colliding_slugs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls = [
+        "https://example.com/tensors/index.html",
+        "https://example.com/models/index.html",
+    ]
+    monkeypatch.setattr(
+        fetch_docs, "fetch_page", lambda url: f"<main><h1>{url}</h1></main>"
+    )
+
+    written, failed = fetch_source("demo", urls, docs_dir=tmp_path)
+
+    # Both pages survive: same final URL segment must not overwrite a file.
+    assert len(written) == 2
+    assert len({p.name for p in written}) == 2
+    assert failed == []
+    texts = [p.read_text(encoding="utf-8") for p in written]
+    assert any("tensors" in t for t in texts)
+    assert any("models" in t for t in texts)
 
 
 def test_fetch_source_saves_raw_markdown_urls_without_conversion(
@@ -259,7 +301,7 @@ def test_fetch_source_saves_raw_markdown_urls_without_conversion(
     raw = "# Function Calling\n\n```python\ntools = [...]  # not html\n```\n"
     monkeypatch.setattr(fetch_docs, "fetch_page", lambda url: raw)
 
-    written = fetch_source(
+    written, failed = fetch_source(
         "qwen",
         ["https://raw.githubusercontent.com/QwenLM/Qwen3/main/docs/function_call.md"],
         docs_dir=tmp_path,
@@ -271,20 +313,73 @@ def test_fetch_source_saves_raw_markdown_urls_without_conversion(
     assert written[0].name == "function-call.md"
 
 
-def test_fetch_source_skips_failed_pages_and_continues(
+def test_fetch_source_skips_failed_pages_and_reports_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def flaky_fetch(url: str) -> str:
         if "bad" in url:
-            raise RuntimeError("boom")
+            raise requests.ConnectionError("boom")
         return "<main><h1>Good</h1></main>"
 
     monkeypatch.setattr(fetch_docs, "fetch_page", flaky_fetch)
 
-    written = fetch_source(
+    written, failed = fetch_source(
         "demo",
         ["https://example.com/bad.html", "https://example.com/good.html"],
         docs_dir=tmp_path,
     )
 
     assert [p.name for p in written] == ["good.md"]
+    assert failed == ["https://example.com/bad.html"]
+
+
+def test_fetch_source_lets_programmer_bugs_crash_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only network failures are skip-and-continue; a code bug must not be
+    # reported as a run of flaky pages.
+    def buggy_fetch(url: str) -> str:
+        raise TypeError("bug in fetch_page")
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", buggy_fetch)
+
+    with pytest.raises(TypeError):
+        fetch_source("demo", ["https://example.com/a.html"], docs_dir=tmp_path)
+
+
+def test_main_rejects_unknown_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("pytorch:\n  - https://example.com/a.html\n", encoding="utf-8")
+    monkeypatch.setattr(fetch_docs, "SOURCES_FILE", registry)
+    monkeypatch.setattr(sys, "argv", ["fetch_docs.py", "pytroch"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_docs.main()
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "pytroch" in out and "pytorch" in out
+
+
+def test_main_exits_nonzero_when_pages_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    registry = tmp_path / "sources.yaml"
+    registry.write_text("demo:\n  - https://example.com/a.html\n", encoding="utf-8")
+    monkeypatch.setattr(fetch_docs, "SOURCES_FILE", registry)
+    monkeypatch.setattr(sys, "argv", ["fetch_docs.py"])
+    monkeypatch.setattr(
+        fetch_docs,
+        "fetch_source",
+        lambda name, urls, docs_dir=None: ([], list(urls)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_docs.main()
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "https://example.com/a.html" in out
+    assert "failed" in out.lower()

@@ -17,26 +17,29 @@ pytorch:
 python:
   - https://docs.python.org/3/tutorial/datastructures.html
 
-# --- Tool docs for the improvement roadmap ---
-# Ollama: streaming, tool calling, embeddings (roadmap #2, #4, #16)
+# --- Tool docs for planned work ---
+# Ollama: streaming answers, batch embeddings, and the future tool-calling
+# agent loop.
 ollama:
   - https://docs.ollama.com/capabilities/tool-calling
   - https://docs.ollama.com/capabilities/streaming
   - https://docs.ollama.com/capabilities/embeddings
 
-# Chroma: collections, querying, metadata filters (roadmap #1, #13, #15)
+# Chroma: collections, querying, metadata filters (used by source scoping,
+# and by future incremental ingest / code indexing).
 chroma:
   - https://docs.trychroma.com/docs/overview/getting-started
   - https://docs.trychroma.com/docs/collections/manage-collections
   - https://docs.trychroma.com/docs/querying-collections/query-and-get
   - https://docs.trychroma.com/docs/querying-collections/metadata-filtering
 
-# Qwen: function calling for the agent-loop milestone (roadmap #16).
+# Qwen: function calling, for the future agent-loop milestone.
 # Raw markdown from the docs repo — qwen.readthedocs.io rate-limits scrapers.
 qwen:
   - https://raw.githubusercontent.com/QwenLM/Qwen3/main/docs/source/framework/function_call.md
 
-# Retrieval tooling: BM25 + cross-encoder reranking (roadmap #7, #8)
+# Retrieval tooling: BM25 keyword search + cross-encoder reranking, for
+# future hybrid-retrieval work.
 retrieval:
   - https://github.com/dorianbrown/rank_bm25
   - https://sbert.net/docs/cross_encoder/usage/usage.html

@@ -1,7 +1,31 @@
 import sys
+import traceback
 from typing import Any
 
-from rag import answer_question, list_sources, source_legend
+import chromadb.errors
+import httpx
+
+from rag import EmptyIndexError, answer_question, list_sources, source_legend
+
+NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
+
+
+def describe_error(error: Exception) -> str:
+    """Turn a pipeline failure into an actionable message.
+
+    Expected failures (no index yet, Ollama unreachable) get one-line hints;
+    anything else is a bug, so keep the full traceback visible.
+    """
+    if isinstance(error, chromadb.errors.NotFoundError):
+        return NO_INDEX_HINT
+
+    if isinstance(error, EmptyIndexError):
+        return str(error)
+
+    if isinstance(error, (httpx.TransportError, ConnectionError)):
+        return f"Could not reach the local models ({error}). Is Ollama running?"
+
+    return f"Unexpected error ({type(error).__name__}):\n{traceback.format_exc()}"
 
 
 def print_sources(metadatas: list[dict[str, Any]]) -> None:
@@ -23,7 +47,10 @@ def apply_source_command(
     stripped = line.strip()
 
     if stripped == "/sources":
-        names = ", ".join(list_sources())
+        try:
+            names = ", ".join(list_sources())
+        except chromadb.errors.NotFoundError:
+            return True, active_source, NO_INDEX_HINT
         return True, active_source, f"Available sources: {names}"
 
     if stripped == "/source" or stripped.startswith("/source "):
@@ -38,7 +65,10 @@ def apply_source_command(
         if name == "all":
             return True, None, "Searching all sources."
 
-        available = list_sources()
+        try:
+            available = list_sources()
+        except chromadb.errors.NotFoundError:
+            return True, active_source, NO_INDEX_HINT
         if name not in available:
             return (
                 True,
@@ -84,7 +114,7 @@ def chat_loop() -> None:
         try:
             answer, metadatas = answer_question(question, history, active_source)
         except Exception as error:
-            print(f"\nError: {error}")
+            print(f"\n{describe_error(error)}")
             continue
 
         print_sources(metadatas)
@@ -104,9 +134,14 @@ def main() -> None:
         return
 
     # This keeps the old one-shot usage:
-    # python src\ask.py "How do I make a PyTorch model?"
+    # python src/ask.py "How do I make a PyTorch model?"
     question = " ".join(sys.argv[1:])
-    answer, metadatas = answer_question(question, history=[])
+
+    try:
+        answer, metadatas = answer_question(question, history=[])
+    except Exception as error:
+        print(describe_error(error))
+        raise SystemExit(1)
 
     print_sources(metadatas)
     print("\nAnswer:\n")
