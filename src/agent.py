@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -158,3 +159,44 @@ def run_agent(
         "Try asking a more specific question.",
         trace,
     )
+
+
+def parse_agent_command(line: str) -> str | None:
+    """Extract the question from '/agent <question>', if this line is one."""
+    stripped = line.strip()
+
+    if not stripped.startswith("/agent"):
+        return None
+
+    question = stripped.removeprefix("/agent").strip()
+
+    return question or None
+
+
+def format_agent_reply(answer: str, trace: list[str]) -> str:
+    """Show how the agent searched, then its answer."""
+    if not trace:
+        return answer
+
+    lines = ["Tool calls:"]
+    lines.extend(f"  {entry}" for entry in trace)
+    lines.append("")
+    lines.append(answer)
+
+    return "\n".join(lines)
+
+
+def main() -> None:
+    """Answer one codebase question from the command line."""
+    if len(sys.argv) < 2:
+        print('Usage: python src/agent.py "where is retrieval scoring done?"')
+        raise SystemExit(1)
+
+    question = " ".join(sys.argv[1:])
+    answer, trace = run_agent(question, root=Path.cwd())
+
+    print(format_agent_reply(answer, trace))
+
+
+if __name__ == "__main__":
+    main()

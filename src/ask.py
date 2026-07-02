@@ -1,10 +1,12 @@
 import sys
 import traceback
+from pathlib import Path
 from typing import Any
 
 import chromadb.errors
 import httpx
 
+from agent import format_agent_reply, parse_agent_command, run_agent
 from rag import EmptyIndexError, answer_question, list_sources, source_legend
 
 NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
@@ -92,6 +94,7 @@ def chat_loop() -> None:
     print("Local RAG chat")
     print("Type your question, or type /exit to quit.")
     print("Scope answers with /sources, /source <name>, /source all.")
+    print("Search this codebase live with /agent <question>.")
 
     while True:
         question = input("\nYou: ").strip()
@@ -103,6 +106,17 @@ def chat_loop() -> None:
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
             print("Goodbye.")
             return
+
+        agent_question = parse_agent_command(question)
+        if agent_question is not None:
+            try:
+                answer, trace = run_agent(agent_question, root=Path.cwd())
+            except Exception as error:
+                print(f"\nError: {error}")
+                continue
+
+            print("\n" + format_agent_reply(answer, trace))
+            continue
 
         handled, active_source, message = apply_source_command(
             question, active_source

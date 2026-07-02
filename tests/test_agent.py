@@ -162,3 +162,26 @@ def test_unknown_tool_calls_are_reported_to_the_model(
     agent.run_agent("q", root=project)
 
     assert "Unknown tool" in tool_messages(calls[1])[0]["content"]
+
+
+def test_parse_agent_command_extracts_the_question() -> None:
+    assert agent.parse_agent_command("/agent where is retrieve?") == "where is retrieve?"
+
+
+def test_parse_agent_command_ignores_other_lines() -> None:
+    assert agent.parse_agent_command("where is retrieve?") is None
+    assert agent.parse_agent_command("/agent") is None
+    assert agent.parse_agent_command("/agent   ") is None
+
+
+def test_format_agent_reply_shows_the_tool_trace() -> None:
+    reply = agent.format_agent_reply(
+        "It is in rag.py.", ["grep({'pattern': 'retrieve'})"]
+    )
+
+    assert "grep({'pattern': 'retrieve'})" in reply
+    assert reply.endswith("It is in rag.py.")
+
+
+def test_format_agent_reply_without_tools_is_just_the_answer() -> None:
+    assert agent.format_agent_reply("Hi.", []) == "Hi."
