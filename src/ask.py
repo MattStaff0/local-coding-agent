@@ -112,7 +112,7 @@ def chat_loop() -> None:
             try:
                 answer, trace = run_agent(agent_question, root=Path.cwd())
             except Exception as error:
-                print(f"\nError: {error}")
+                print(f"\n{describe_error(error)}")
                 continue
 
             print("\n" + format_agent_reply(answer, trace))

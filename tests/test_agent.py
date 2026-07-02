@@ -172,6 +172,8 @@ def test_parse_agent_command_ignores_other_lines() -> None:
     assert agent.parse_agent_command("where is retrieve?") is None
     assert agent.parse_agent_command("/agent") is None
     assert agent.parse_agent_command("/agent   ") is None
+    assert agent.parse_agent_command("/agentfoo") is None
+    assert agent.parse_agent_command("/agents list") is None
 
 
 def test_format_agent_reply_shows_the_tool_trace() -> None:

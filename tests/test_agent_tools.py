@@ -56,6 +56,10 @@ def test_grep_scopes_to_a_subdir(project: Path) -> None:
     assert "No matches" in result
 
 
+def test_grep_reports_missing_subdir(project: Path) -> None:
+    assert "No such directory" in agent_tools.grep_files(project, "retrieve", "nope")
+
+
 def test_grep_reports_when_nothing_matches(project: Path) -> None:
     assert "No matches" in agent_tools.grep_files(project, "unicorn")
 
@@ -105,3 +109,24 @@ def test_read_file_reports_start_line_past_the_end(project: Path) -> None:
     result = agent_tools.read_file(project, "src/main.py", start_line=99)
 
     assert "has 2 lines" in result
+
+
+def test_symlink_files_are_excluded_from_list_and_grep(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Symlinks pointing outside the sandbox root must not be listed or searched."""
+    root = tmp_path_factory.mktemp("repo")
+    secret_dir = tmp_path_factory.mktemp("outside")
+    secret = secret_dir / "secret.md"
+    secret.write_text("SECRET content here\n", encoding="utf-8")
+
+    # A symlink INSIDE the root that points OUTSIDE it.
+    (root / "src").mkdir()
+    (root / "src" / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+    (root / "leak.md").symlink_to(secret)
+
+    listing = agent_tools.list_files(root)
+    assert "leak.md" not in listing
+
+    grep_result = agent_tools.grep_files(root, "SECRET")
+    assert "No matches" in grep_result

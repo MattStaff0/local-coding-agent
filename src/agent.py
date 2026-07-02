@@ -165,7 +165,7 @@ def parse_agent_command(line: str) -> str | None:
     """Extract the question from '/agent <question>', if this line is one."""
     stripped = line.strip()
 
-    if not stripped.startswith("/agent"):
+    if stripped != "/agent" and not stripped.startswith("/agent "):
         return None
 
     question = stripped.removeprefix("/agent").strip()

@@ -26,6 +26,9 @@ def _iter_text_files(base: Path):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
 
+        if path.is_symlink():
+            continue
+
         if path.is_file() and path.suffix in TEXT_SUFFIXES:
             yield path
 
@@ -55,6 +58,10 @@ def grep_files(root: Path, pattern: str, subdir: str = ".") -> str:
         return f"Invalid regex '{pattern}': {error}"
 
     base = _resolve_inside(root, subdir)
+
+    if not base.is_dir():
+        return f"No such directory: {subdir}"
+
     matches: list[str] = []
 
     for path in _iter_text_files(base):
