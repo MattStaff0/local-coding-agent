@@ -1,0 +1,8 @@
+# Registry of documentation sources for src/fetch_docs.py.
+# Each top-level key becomes a folder under docs/, and each URL is fetched
+# and converted to markdown: docs/<source>/<page-slug>.md
+pytorch:
+  - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html
+python:
+  - https://docs.python.org/3/tutorial/datastructures.html
