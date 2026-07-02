@@ -42,3 +42,32 @@ def test_list_files_reports_missing_subdir(project: Path) -> None:
 def test_paths_outside_root_are_refused(project: Path) -> None:
     with pytest.raises(ValueError):
         agent_tools.list_files(project, "../..")
+
+
+def test_grep_reports_path_line_and_text(project: Path) -> None:
+    result = agent_tools.grep_files(project, r"def retrieve")
+
+    assert "src/main.py:1: def retrieve():" in result
+
+
+def test_grep_scopes_to_a_subdir(project: Path) -> None:
+    result = agent_tools.grep_files(project, "Demo", "src")
+
+    assert "No matches" in result
+
+
+def test_grep_reports_when_nothing_matches(project: Path) -> None:
+    assert "No matches" in agent_tools.grep_files(project, "unicorn")
+
+
+def test_grep_reports_invalid_regex_instead_of_raising(project: Path) -> None:
+    assert "Invalid regex" in agent_tools.grep_files(project, "(")
+
+
+def test_grep_caps_the_match_count(project: Path) -> None:
+    (project / "big.txt").write_text("hit\n" * 200, encoding="utf-8")
+
+    result = agent_tools.grep_files(project, "hit")
+
+    assert len(result.splitlines()) == agent_tools.MAX_GREP_MATCHES + 1
+    assert "capped" in result

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 # Output caps protect the small model's context window: a tool result that
@@ -44,3 +45,35 @@ def list_files(root: Path, subdir: str = ".") -> str:
         return f"No text files under {subdir}."
 
     return "\n".join(lines)
+
+
+def grep_files(root: Path, pattern: str, subdir: str = ".") -> str:
+    """Search file contents with a regex; returns 'path:line: text' matches."""
+    try:
+        compiled = re.compile(pattern)
+    except re.error as error:
+        return f"Invalid regex '{pattern}': {error}"
+
+    base = _resolve_inside(root, subdir)
+    matches: list[str] = []
+
+    for path in _iter_text_files(base):
+        text = path.read_text(encoding="utf-8", errors="replace")
+
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not compiled.search(line):
+                continue
+
+            relative = path.relative_to(root).as_posix()
+            matches.append(f"{relative}:{line_number}: {line.strip()}")
+
+            if len(matches) >= MAX_GREP_MATCHES:
+                matches.append(
+                    f"... capped at {MAX_GREP_MATCHES} matches; use a more specific pattern."
+                )
+                return "\n".join(matches)
+
+    if not matches:
+        return f"No matches for '{pattern}'."
+
+    return "\n".join(matches)
