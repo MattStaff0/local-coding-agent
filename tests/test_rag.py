@@ -58,6 +58,22 @@ def test_index_docs_stores_source_metadata(
     assert sources == {"pytorch", "python", "general"}
 
 
+def test_index_docs_stores_heading_path_and_breadcrumbed_text(
+    fake_embed, temp_db, docs_tree: Path
+) -> None:
+    index_docs(docs_dir=docs_tree)
+
+    collection = rag.get_client().get_collection(rag.COLLECTION_NAME)
+    records = collection.get(include=["metadatas", "documents"])
+
+    by_heading = dict(zip(
+        [m["heading"] for m in records["metadatas"]], records["documents"]
+    ))
+    assert "Tensors" in by_heading
+    assert by_heading["Tensors"].startswith("Tensors")
+    assert "torch tensors are arrays." in by_heading["Tensors"]
+
+
 def test_retrieve_filters_by_source(fake_embed, temp_db, docs_tree: Path) -> None:
     index_docs(docs_dir=docs_tree)
 

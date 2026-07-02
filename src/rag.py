@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,164 @@ def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str
             chunks.append(chunk)
 
         start += chunk_size - overlap
+
+    return chunks
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_FENCE_MARKERS = ("```", "~~~")
+
+
+def _split_sections(text: str) -> list[tuple[str, str]]:
+    """Split markdown into (heading breadcrumb, section body) pairs.
+
+    Heading lines open a new section; `#` inside code fences is code, not a
+    heading. The breadcrumb joins the active heading at each level, like
+    "PyTorch Basics > Building a Model".
+    """
+    sections: list[tuple[str, str]] = []
+    heading_stack: list[str] = []
+    body_lines: list[str] = []
+    fence_marker: str | None = None
+
+    def close_section() -> None:
+        nonlocal body_lines
+        sections.append((" > ".join(heading_stack), "\n".join(body_lines).strip()))
+        body_lines = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+
+        if fence_marker:
+            body_lines.append(line)
+            if stripped.startswith(fence_marker):
+                fence_marker = None
+            continue
+
+        if stripped.startswith(_FENCE_MARKERS):
+            fence_marker = stripped[:3]
+            body_lines.append(line)
+            continue
+
+        match = _HEADING_RE.match(line)
+        if match:
+            close_section()
+            level = len(match.group(1))
+            heading_stack[:] = heading_stack[: level - 1] + [match.group(2)]
+            continue
+
+        body_lines.append(line)
+
+    close_section()
+
+    return [(path, body) for path, body in sections if body]
+
+
+def _split_blocks(body: str) -> list[str]:
+    """Split a section body into paragraph blocks; a code fence is one block."""
+    blocks: list[str] = []
+    current: list[str] = []
+    fence_marker: str | None = None
+
+    def close_block() -> None:
+        nonlocal current
+        if current:
+            blocks.append("\n".join(current))
+            current = []
+
+    for line in body.splitlines():
+        stripped = line.strip()
+
+        if fence_marker:
+            current.append(line)
+            if stripped.startswith(fence_marker):
+                fence_marker = None
+                close_block()
+            continue
+
+        if stripped.startswith(_FENCE_MARKERS):
+            close_block()
+            fence_marker = stripped[:3]
+            current.append(line)
+            continue
+
+        if not stripped:
+            close_block()
+            continue
+
+        current.append(line)
+
+    close_block()
+
+    return blocks
+
+
+def _pack_section(path: str, body: str, chunk_size: int) -> list[dict[str, str]]:
+    """Pack one section's paragraphs into chunks that fit chunk_size."""
+    prefix = f"{path}\n\n" if path else ""
+    budget = max(chunk_size - len(prefix), 1)
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = 0
+
+    for block in _split_blocks(body):
+        needed = len(block) + (2 if current else 0)
+
+        if current and current_len + needed > budget:
+            groups.append(current)
+
+            # Carry the previous paragraph into the next chunk so context near
+            # the boundary is not lost (paragraph-level overlap).
+            last = current[-1]
+            if (
+                not last.lstrip().startswith(_FENCE_MARKERS)
+                and len(last) + 2 + len(block) <= budget
+            ):
+                current, current_len = [last], len(last)
+            else:
+                current, current_len = [], 0
+
+            needed = len(block) + (2 if current else 0)
+
+        if not current and len(block) > budget:
+            if block.lstrip().startswith(_FENCE_MARKERS):
+                # Never split a code fence; an oversized one gets its own chunk.
+                groups.append([block])
+            else:
+                for piece in chunk_text(block, chunk_size=budget):
+                    groups.append([piece])
+            continue
+
+        current.append(block)
+        current_len += needed
+
+    if current:
+        groups.append(current)
+
+    return [
+        {"heading": path, "text": prefix + "\n\n".join(group)} for group in groups
+    ]
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop a leading YAML frontmatter block (fetch provenance, not doc content)."""
+    match = re.match(r"\A---\n.*?\n---\n", text, flags=re.DOTALL)
+    return text[match.end() :] if match else text
+
+
+def chunk_markdown(text: str, chunk_size: int = 1500) -> list[dict[str, str]]:
+    """Chunk markdown by heading sections, keeping the breadcrumb in each chunk.
+
+    Well-formatted docs split into one chunk per heading section so retrieval
+    matches on headings instead of arbitrary character windows. Oversized
+    sections fall back to paragraph-boundary packing with one-paragraph overlap.
+    """
+    text = _strip_frontmatter(text)
+    chunks = []
+
+    for path, body in _split_sections(text):
+        chunks.extend(_pack_section(path, body, chunk_size))
 
     return chunks
 
@@ -96,19 +255,20 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
 
     for doc_file in doc_files:
         text = doc_file.read_text(encoding="utf-8")
-        chunks = chunk_text(text)
+        chunks = chunk_markdown(text)
 
         print(f"Processing {doc_file.name}: {len(chunks)} chunks")
 
         for i, chunk in enumerate(chunks):
             # Each chunk needs its own id, original text, embedding, and metadata.
             ids.append(chunk_id_for(doc_file, i, docs_dir))
-            documents.append(chunk)
-            embeddings.append(embed(chunk))
+            documents.append(chunk["text"])
+            embeddings.append(embed(chunk["text"]))
             metadatas.append(
                 {
                     "source": source_for(doc_file, docs_dir),
                     "path": str(doc_file),
+                    "heading": chunk["heading"],
                     "chunk_index": i,
                 }
             )

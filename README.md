@@ -12,7 +12,8 @@ docs, understand a repo, suggest patches, and eventually run safe commands.
 ```text
 docs/*.md
 |
-split docs into chunks
+split docs into chunks by markdown heading sections
+(each chunk keeps its heading breadcrumb, e.g. "Tensors > Initializing a Tensor")
 |
 embed each chunk with nomic-embed-text through Ollama
 |
