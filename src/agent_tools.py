@@ -77,3 +77,32 @@ def grep_files(root: Path, pattern: str, subdir: str = ".") -> str:
         return f"No matches for '{pattern}'."
 
     return "\n".join(matches)
+
+
+def read_file(root: Path, path: str, start_line: int = 1) -> str:
+    """Read one file with numbered lines, truncating with a resume hint."""
+    target = _resolve_inside(root, path)
+
+    if not target.is_file():
+        return f"No such file: {path}"
+
+    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    picked: list[str] = []
+    used = 0
+
+    for number, line in enumerate(lines[start_line - 1 :], start=start_line):
+        numbered = f"{number}: {line}"
+
+        if used + len(numbered) > MAX_FILE_CHARS:
+            picked.append(
+                f"... truncated; call read_file again with start_line={number} for the rest."
+            )
+            break
+
+        picked.append(numbered)
+        used += len(numbered) + 1
+
+    if not picked:
+        return f"{path} has no line {start_line}; the file has {len(lines)} lines."
+
+    return "\n".join(picked)

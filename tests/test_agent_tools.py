@@ -71,3 +71,37 @@ def test_grep_caps_the_match_count(project: Path) -> None:
 
     assert len(result.splitlines()) == agent_tools.MAX_GREP_MATCHES + 1
     assert "capped" in result
+
+
+def test_read_file_numbers_every_line(project: Path) -> None:
+    result = agent_tools.read_file(project, "src/main.py")
+
+    assert result.startswith("1: def retrieve():")
+    assert "2:     return 4" in result
+
+
+def test_read_file_starts_at_the_requested_line(project: Path) -> None:
+    result = agent_tools.read_file(project, "src/main.py", start_line=2)
+
+    assert result.startswith("2:")
+    assert "1:" not in result
+
+
+def test_read_file_reports_missing_files(project: Path) -> None:
+    assert "No such file" in agent_tools.read_file(project, "nope.py")
+
+
+def test_read_file_truncates_with_a_resume_hint(project: Path) -> None:
+    (project / "long.md").write_text("some line here\n" * 5000, encoding="utf-8")
+
+    result = agent_tools.read_file(project, "long.md")
+
+    assert len(result) <= agent_tools.MAX_FILE_CHARS + 100
+    assert "truncated" in result
+    assert "start_line=" in result
+
+
+def test_read_file_reports_start_line_past_the_end(project: Path) -> None:
+    result = agent_tools.read_file(project, "src/main.py", start_line=99)
+
+    assert "has 2 lines" in result
