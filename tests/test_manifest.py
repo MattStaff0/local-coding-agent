@@ -38,3 +38,84 @@ def test_ingest_rebuilds_manifest(tmp_path, monkeypatch):
     assert record["source"] == "python"
     assert "tensor" in record["tokens"]
     assert record["approx_tokens"] > 0
+
+
+class _SpyCollection:
+    """Duck-typed collection that records .get() calls."""
+
+    def __init__(self, ids, documents, metadatas, distances):
+        self._data = dict(zip(ids, zip(documents, metadatas)))
+        self._query = {"ids": [ids[:2]], "distances": [distances[:2]]}
+        self.get_calls = []
+
+    def query(self, **kwargs):
+        return self._query
+
+    def get(self, ids=None, where=None, include=None):
+        self.get_calls.append({"ids": ids, "where": where})
+        picked = ids if ids is not None else list(self._data)
+        return {
+            "ids": picked,
+            "documents": [self._data[i][0] for i in picked],
+            "metadatas": [self._data[i][1] for i in picked],
+        }
+
+
+def _fake_client(collection):
+    class _Client:
+        def get_collection(self, name):
+            return collection
+
+    return _Client()
+
+
+def test_hybrid_retrieve_uses_manifest_not_full_corpus(tmp_path, monkeypatch):
+    ids = ["a-0", "b-0", "c-0"]
+    documents = ["torch tensor basics", "python lists", "cuda devices"]
+    metadatas = [{"source": "pytorch"}, {"source": "python"}, {"source": "pytorch"}]
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest.write_manifest(
+        [
+            {"id": i, "source": m["source"], "tokens": rag._tokenize(d)}
+            for i, d, m in zip(ids, documents, metadatas)
+        ],
+        manifest_path,
+    )
+    monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
+    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+
+    spy = _SpyCollection(ids, documents, metadatas, [0.2, 0.3])
+    monkeypatch.setattr(rag, "get_client", lambda: _fake_client(spy))
+    monkeypatch.setattr(rag, "embed", lambda text: [0.0, 0.0, 1.0])
+
+    results = rag.retrieve("torch tensor")
+
+    assert results["ids"][0]  # got fused results
+    # The only .get() calls carry explicit ids - never a full-corpus fetch.
+    assert spy.get_calls, "expected an ids fetch for the fused results"
+    assert all(call["ids"] is not None for call in spy.get_calls)
+
+
+def test_bm25_cache_invalidates_on_manifest_change(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest.write_manifest(
+        [{"id": "a-0", "source": "python", "tokens": ["lists"]}], manifest_path
+    )
+    monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
+    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+
+    first = rag._bm25_for_source(None)
+    again = rag._bm25_for_source(None)
+    assert first is again  # cached: same tuple object back
+
+    import os as _os
+
+    manifest.write_manifest(
+        [{"id": "b-0", "source": "python", "tokens": ["dicts"]}], manifest_path
+    )
+    _os.utime(manifest_path, ns=(1, 1))  # force a different mtime_ns
+
+    rebuilt = rag._bm25_for_source(None)
+    assert rebuilt is not first
+    assert rebuilt[1] == ["b-0"]

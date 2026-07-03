@@ -497,6 +497,56 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
+# Loaded once per process and reused across queries; the mtime check makes a
+# fresh ingest visible without restarting chat.
+_manifest_cache: dict[str, Any] = {"mtime": None, "records": [], "bm25": {}}
+_warned_no_manifest = False
+
+
+def _load_manifest_cached() -> list[dict[str, Any]]:
+    try:
+        mtime = MANIFEST_PATH.stat().st_mtime_ns
+    except FileNotFoundError:
+        _manifest_cache.update(mtime=None, records=[], bm25={})
+        return []
+
+    if _manifest_cache["mtime"] != mtime:
+        _manifest_cache.update(
+            mtime=mtime,
+            records=manifest_module.load_manifest(MANIFEST_PATH),
+            bm25={},
+        )
+
+    return _manifest_cache["records"]
+
+
+def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
+    records = _load_manifest_cached()
+    subset = [record for record in records if source is None or record["source"] == source]
+
+    if not subset:
+        return None
+
+    key = source or ""
+    if key not in _manifest_cache["bm25"]:
+        _manifest_cache["bm25"][key] = (
+            BM25Okapi([record["tokens"] for record in subset]),
+            [record["id"] for record in subset],
+        )
+
+    return _manifest_cache["bm25"][key]
+
+
+def _bm25_rank_ids(question: str, bm25: BM25Okapi, ids: list[str]) -> list[str]:
+    """Rank manifest chunk ids by BM25 keyword relevance to the question."""
+    scores = bm25.get_scores(_tokenize(question))
+    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+
+    # A score of zero or below is treated as no keyword match (BM25's epsilon
+    # floor can push common-term scores negative in a tiny corpus).
+    return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
+
+
 def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
     """Fuse rankings with Reciprocal Rank Fusion: score = sum of 1/(k+rank).
 
@@ -522,6 +572,52 @@ def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[s
     # A score of zero or below is treated as no keyword match (BM25's epsilon
     # floor can push common-term scores negative in a tiny corpus).
     return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
+
+
+def _retrieve_hybrid_slow(
+    question: str,
+    collection,
+    vector_results: dict[str, Any],
+    where: dict[str, str] | None,
+    n_results: int,
+) -> dict[str, Any]:
+    global _warned_no_manifest
+    if not _warned_no_manifest:
+        print("(no manifest - falling back to slow per-query BM25; re-run ingest to fix)")
+        _warned_no_manifest = True
+
+    corpus = collection.get(where=where, include=["documents", "metadatas"])
+
+    if not corpus["ids"]:
+        return vector_results
+
+    vector_ids = vector_results["ids"][0]
+    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+
+    fused = _rrf_scores([vector_ids, bm25_ids])
+    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+
+    by_id = {
+        item_id: (document, metadata)
+        for item_id, document, metadata in zip(
+            corpus["ids"], corpus["documents"], corpus["metadatas"]
+        )
+    }
+    # Distances stay honest: measured vector distances where known, the
+    # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
+    # relevance is reported separately as keyword_hits - a strong (top-3)
+    # BM25 match is evidence of relevance even when the embedding disagrees,
+    # and answer_question's refusal checks that signal explicitly.
+    distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
+    strong_keyword_ids = set(bm25_ids[:3])
+
+    return {
+        "ids": [top_ids],
+        "documents": [[by_id[item_id][0] for item_id in top_ids]],
+        "metadatas": [[by_id[item_id][1] for item_id in top_ids]],
+        "distances": [[distance_by_id.get(item_id, 2.0) for item_id in top_ids]],
+        "keyword_hits": [[item_id in strong_keyword_ids for item_id in top_ids]],
+    }
 
 
 def retrieve(
@@ -556,26 +652,34 @@ def retrieve(
     if mode != "hybrid":
         return vector_results
 
-    corpus = collection.get(where=where, include=["documents", "metadatas"])
+    cached = _bm25_for_source(source)
 
-    if not corpus["ids"]:
-        return vector_results
+    if cached is None:
+        return _retrieve_hybrid_slow(
+            question, collection, vector_results, where, n_results
+        )
 
+    bm25, manifest_ids = cached
     vector_ids = vector_results["ids"][0]
-    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+    bm25_ids = _bm25_rank_ids(question, bm25, manifest_ids)
 
     fused = _rrf_scores([vector_ids, bm25_ids])
     top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
 
+    fetched = collection.get(ids=top_ids, include=["documents", "metadatas"])
     by_id = {
         item_id: (document, metadata)
         for item_id, document, metadata in zip(
-            corpus["ids"], corpus["documents"], corpus["metadatas"]
+            fetched["ids"], fetched["documents"], fetched["metadatas"]
         )
     }
+    # A manifest id can be stale for the few seconds between a collection
+    # delete and the post-ingest manifest rebuild; drop ids Chroma no longer has.
+    top_ids = [item_id for item_id in top_ids if item_id in by_id]
+
     # Distances stay honest: measured vector distances where known, the
     # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
-    # relevance is reported separately as keyword_hits — a strong (top-3)
+    # relevance is reported separately as keyword_hits - a strong (top-3)
     # BM25 match is evidence of relevance even when the embedding disagrees,
     # and answer_question's refusal checks that signal explicitly.
     distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
