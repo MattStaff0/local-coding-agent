@@ -124,6 +124,54 @@ def fetch_page(url: str) -> str:
     return response.text
 
 
+def markdown_variant_url(url: str) -> str | None:
+    """Guess the native-markdown URL for a doc page (llms.txt convention).
+
+    Doc platforms that adopt llms.txt serve `<page>.md` beside each HTML page
+    and an `llms.txt` index at the site root — markdown straight from the
+    source beats scraping HTML every time.
+    """
+    parsed = urlparse(url)
+    path = parsed.path
+
+    if path.endswith((".md", ".txt")):
+        return None
+
+    if not path.strip("/"):
+        return f"{parsed.scheme}://{parsed.netloc}/llms.txt"
+
+    if path.endswith((".html", ".htm")):
+        new_path = re.sub(r"\.html?$", ".md", path)
+    else:
+        new_path = path.rstrip("/") + ".md"
+
+    return parsed._replace(path=new_path).geturl()
+
+
+def probe_native_markdown(url: str) -> tuple[str, str] | None:
+    """Fetch a page's markdown variant if the site serves one.
+
+    Returns (variant_url, markdown) on a hit. Sites without the convention
+    404; SPA-ish sites answer every path with their HTML shell — both count
+    as misses and the caller falls back to HTML scraping.
+    """
+    variant = markdown_variant_url(url)
+
+    if variant is None:
+        return None
+
+    try:
+        text = fetch_page(variant)
+    except requests.RequestException:
+        return None
+
+    # Markdown never leads with a tag; an SPA shell or error page always does.
+    if text.lstrip().startswith("<"):
+        return None
+
+    return variant, text
+
+
 def _unique_slug(url: str, taken: set[str]) -> str:
     """Pick a slug that no other URL in this source already claimed."""
     slug = slug_for_url(url)
@@ -160,25 +208,33 @@ def fetch_source(
     taken_slugs: set[str] = set()
 
     for url in urls:
-        try:
-            html = fetch_page(url)
-        except requests.RequestException as error:
-            print(f"  FAILED {url}: {error}")
-            failed.append(url)
-            continue
+        # Prefer native markdown when the site publishes it (llms.txt
+        # convention) — no conversion loss, and far fewer tokens than HTML.
+        probe = probe_native_markdown(url)
 
-        # Pages already published as markdown need no conversion at all.
-        if urlparse(url).path.endswith((".md", ".txt")):
-            markdown = html
+        if probe is not None:
+            fetched_url, markdown = probe
         else:
-            markdown = html_to_markdown(html)
+            fetched_url = url
+            try:
+                html = fetch_page(url)
+            except requests.RequestException as error:
+                print(f"  FAILED {url}: {error}")
+                failed.append(url)
+                continue
+
+            # Pages already published as markdown need no conversion at all.
+            if urlparse(url).path.endswith((".md", ".txt")):
+                markdown = html
+            else:
+                markdown = html_to_markdown(html)
 
         path = write_doc(
             docs_dir=docs_dir,
             source=source,
             slug=_unique_slug(url, taken_slugs),
             markdown=markdown,
-            url=url,
+            url=fetched_url,
             fetched=date.today().isoformat(),
         )
         print(f"  {url} -> {path}")

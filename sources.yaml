@@ -43,3 +43,9 @@ qwen:
 retrieval:
   - https://github.com/dorianbrown/rank_bm25
   - https://sbert.net/docs/cross_encoder/usage/usage.html
+
+# MCP docs: context for the planned MCP client integration (see the
+# 2026-07-02 MCP options doc in the vault).
+mcp:
+  - https://modelcontextprotocol.io/docs/getting-started/intro
+  - https://modelcontextprotocol.io/docs/develop/build-client

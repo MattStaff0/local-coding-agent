@@ -46,3 +46,7 @@
   path: docs/qwen/function-call.md
 - question: How do I rank documents with BM25 in Python?
   path: docs/retrieval/rank-bm25.md
+- question: What is the Model Context Protocol and why does it matter?
+  path: docs/mcp/intro.md
+- question: How do I build an MCP client that connects to a server?
+  path: docs/mcp/build-client.md

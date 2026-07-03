@@ -1,9 +1,15 @@
 ---
-url: https://docs.ollama.com/capabilities/embeddings
+url: https://docs.ollama.com/capabilities/embeddings.md
 fetched: 2026-07-02
 ---
 
-[Guide](/)[Integrations](/integrations)[API Reference](/api/introduction)
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.ollama.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Embeddings
+
+> Generate text embeddings for semantic search, retrieval, and RAG.
 
 Embeddings turn text into numeric vectors you can store in a vector database, search with cosine similarity, or use in RAG pipelines. The vector length depends on the model (typically 384–1024 dimensions).
 
@@ -15,112 +21,117 @@ Embeddings turn text into numeric vectors you can store in a vector database, se
 
 ## Generate embeddings
 
-* CLI
-* cURL
-* Python
-* JavaScript
+<Tabs>
+  <Tab title="CLI">
+    Generate embeddings directly from the command line:
 
-Generate embeddings directly from the command line:
+    ```shell theme={"system"}
+    ollama run embeddinggemma "Hello world"
+    ```
 
-```
-ollama run embeddinggemma "Hello world"
-```
+    You can also pipe text to generate embeddings:
 
-You can also pipe text to generate embeddings:
+    ```shell theme={"system"}
+    echo "Hello world" | ollama run embeddinggemma
+    ```
 
-```
-echo "Hello world" | ollama run embeddinggemma
-```
+    Output is a JSON array.
+  </Tab>
 
-Output is a JSON array.
+  <Tab title="cURL">
+    ```shell theme={"system"}
+    curl -X POST http://localhost:11434/api/embed \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "embeddinggemma",
+        "input": "The quick brown fox jumps over the lazy dog."
+      }'
+    ```
+  </Tab>
 
-```
-curl -X POST http://localhost:11434/api/embed \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "embeddinggemma",
-    "input": "The quick brown fox jumps over the lazy dog."
-  }'
-```
+  <Tab title="Python">
+    ```python theme={"system"}
+    import ollama
 
-```
-import ollama
+    single = ollama.embed(
+      model='embeddinggemma',
+      input='The quick brown fox jumps over the lazy dog.'
+    )
+    print(len(single['embeddings'][0]))  # vector length
+    ```
+  </Tab>
 
-single = ollama.embed(
-  model='embeddinggemma',
-  input='The quick brown fox jumps over the lazy dog.'
-)
-print(len(single['embeddings'][0]))  # vector length
-```
+  <Tab title="JavaScript">
+    ```javascript theme={"system"}
+    import ollama from 'ollama'
 
-```
-import ollama from 'ollama'
+    const single = await ollama.embed({
+      model: 'embeddinggemma',
+      input: 'The quick brown fox jumps over the lazy dog.',
+    })
+    console.log(single.embeddings[0].length) // vector length
+    ```
+  </Tab>
+</Tabs>
 
-const single = await ollama.embed({
-  model: 'embeddinggemma',
-  input: 'The quick brown fox jumps over the lazy dog.',
-})
-console.log(single.embeddings[0].length) // vector length
-```
-
-The `/api/embed` endpoint returns L2‑normalized (unit‑length) vectors.
+<Note>
+  The `/api/embed` endpoint returns L2‑normalized (unit‑length) vectors.
+</Note>
 
 ## Generate a batch of embeddings
 
 Pass an array of strings to `input`.
 
-* cURL
-* Python
-* JavaScript
+<Tabs>
+  <Tab title="cURL">
+    ```shell theme={"system"}
+    curl -X POST http://localhost:11434/api/embed \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "embeddinggemma",
+        "input": [
+          "First sentence",
+          "Second sentence",
+          "Third sentence"
+        ]
+      }'
+    ```
+  </Tab>
 
-```
-curl -X POST http://localhost:11434/api/embed \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "embeddinggemma",
-    "input": [
-      "First sentence",
-      "Second sentence",
-      "Third sentence"
-    ]
-  }'
-```
+  <Tab title="Python">
+    ```python theme={"system"}
+    import ollama
 
-```
-import ollama
+    batch = ollama.embed(
+      model='embeddinggemma',
+      input=[
+        'The quick brown fox jumps over the lazy dog.',
+        'The five boxing wizards jump quickly.',
+        'Jackdaws love my big sphinx of quartz.',
+      ]
+    )
+    print(len(batch['embeddings']))  # number of vectors
+    ```
+  </Tab>
 
-batch = ollama.embed(
-  model='embeddinggemma',
-  input=[
-    'The quick brown fox jumps over the lazy dog.',
-    'The five boxing wizards jump quickly.',
-    'Jackdaws love my big sphinx of quartz.',
-  ]
-)
-print(len(batch['embeddings']))  # number of vectors
-```
+  <Tab title="JavaScript">
+    ```javascript theme={"system"}
+    import ollama from 'ollama'
 
-```
-import ollama from 'ollama'
-
-const batch = await ollama.embed({
-  model: 'embeddinggemma',
-  input: [
-    'The quick brown fox jumps over the lazy dog.',
-    'The five boxing wizards jump quickly.',
-    'Jackdaws love my big sphinx of quartz.',
-  ],
-})
-console.log(batch.embeddings.length) // number of vectors
-```
+    const batch = await ollama.embed({
+      model: 'embeddinggemma',
+      input: [
+        'The quick brown fox jumps over the lazy dog.',
+        'The five boxing wizards jump quickly.',
+        'Jackdaws love my big sphinx of quartz.',
+      ],
+    })
+    console.log(batch.embeddings.length) // number of vectors
+    ```
+  </Tab>
+</Tabs>
 
 ## Tips
 
 * Use cosine similarity for most semantic search use cases.
 * Use the same embedding model for both indexing and querying.
-
-[Previous](/capabilities/vision)[Tool calling
-
-Next](/capabilities/tool-calling)
-
-⌘I
