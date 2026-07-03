@@ -310,6 +310,12 @@ def _prepare_file(
 
     print(f"Processing {doc_file.name}: {len(chunks)} chunks")
 
+    if not chunks:
+        # Heading-only/frontmatter-only files produce no chunks; calling
+        # ollama.embed with an empty input is an endpoint error, not a no-op.
+        print(f"Skipping {doc_file.name}: no indexable content")
+        return [], [], [], []
+
     # One embedding call per file instead of per chunk keeps ingest fast
     # once the corpus is hundreds of pages.
     embeddings = embed_batch([chunk["text"] for chunk in chunks])
@@ -371,9 +377,10 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
 
         # Everything embedded successfully — only now swap the index.
         collection = reset_collection(get_client())
-        collection.add(
-            ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
-        )
+        if ids:
+            collection.add(
+                ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
+            )
 
         return len(documents)
 
