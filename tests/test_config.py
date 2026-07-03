@@ -1,52 +1,61 @@
 """Model names must be overridable via environment variables (repo plan #3).
 
-The constants are read from the environment at import time, so these tests
-reload the modules after changing the env, and re-reload at teardown so the
-rest of the suite sees the defaults again.
+The constants are read from the environment at import time. Reloading modules
+in-process would replace classes like EmptyIndexError and break identity for
+every other test, so each case imports the module in a clean subprocess with
+the environment it wants.
 """
 
-import importlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-import pytest
-
-import agent
-import rag
-
-
-@pytest.fixture()
-def reload_after(monkeypatch: pytest.MonkeyPatch):
-    """Restore default constants after the env-override reloads."""
-    yield monkeypatch
-    monkeypatch.undo()
-    importlib.reload(rag)
-    importlib.reload(agent)
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_chat_model_defaults_without_env() -> None:
-    assert rag.CHAT_MODEL == "qwen2.5-coder:3b"
-    assert rag.EMBED_MODEL == "nomic-embed-text"
-    assert agent.AGENT_MODEL == "qwen2.5-coder:3b"
+def import_and_print(expression: str, env_overrides: dict[str, str]) -> str:
+    """Print an expression from a fresh interpreter with the given env."""
+    env = os.environ.copy()
+    env.pop("OLLAMA_CHAT_MODEL", None)
+    env.pop("OLLAMA_EMBED_MODEL", None)
+    env.update(env_overrides)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+
+    result = subprocess.run(
+        [sys.executable, "-c", f"import agent, rag; print({expression})"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
-def test_ollama_chat_model_env_overrides_chat_model(reload_after) -> None:
-    reload_after.setenv("OLLAMA_CHAT_MODEL", "qwen3:8b")
+def test_models_default_without_env() -> None:
+    line = import_and_print(
+        "rag.CHAT_MODEL, rag.EMBED_MODEL, agent.AGENT_MODEL", {}
+    )
 
-    importlib.reload(rag)
-
-    assert rag.CHAT_MODEL == "qwen3:8b"
-
-
-def test_ollama_embed_model_env_overrides_embed_model(reload_after) -> None:
-    reload_after.setenv("OLLAMA_EMBED_MODEL", "nomic-embed-code")
-
-    importlib.reload(rag)
-
-    assert rag.EMBED_MODEL == "nomic-embed-code"
+    assert line == "qwen2.5-coder:3b nomic-embed-text qwen2.5-coder:3b"
 
 
-def test_agent_model_follows_ollama_chat_model_env(reload_after) -> None:
-    reload_after.setenv("OLLAMA_CHAT_MODEL", "qwen3:8b")
+def test_ollama_chat_model_env_overrides_chat_model() -> None:
+    line = import_and_print("rag.CHAT_MODEL", {"OLLAMA_CHAT_MODEL": "qwen3:8b"})
 
-    importlib.reload(agent)
+    assert line == "qwen3:8b"
 
-    assert agent.AGENT_MODEL == "qwen3:8b"
+
+def test_ollama_embed_model_env_overrides_embed_model() -> None:
+    line = import_and_print(
+        "rag.EMBED_MODEL", {"OLLAMA_EMBED_MODEL": "nomic-embed-code"}
+    )
+
+    assert line == "nomic-embed-code"
+
+
+def test_agent_model_follows_ollama_chat_model_env() -> None:
+    line = import_and_print("agent.AGENT_MODEL", {"OLLAMA_CHAT_MODEL": "qwen3:8b"})
+
+    assert line == "qwen3:8b"
