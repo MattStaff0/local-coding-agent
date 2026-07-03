@@ -528,6 +528,36 @@ User question:
 """.strip()
 
 
+def rewrite_query(question: str, history: list[dict[str, str]]) -> str:
+    """Rewrite a follow-up like "how do I train it?" into a standalone query.
+
+    Pronouns embed terribly without their referent, so retrieval for
+    follow-ups works off a model-written standalone rewrite. Any failure
+    falls back to the original question — a worse query beats no answer.
+    """
+    if not history:
+        return question
+
+    prompt = (
+        "Rewrite the user's follow-up question as one standalone search "
+        "query, using the conversation for missing context. Reply with ONLY "
+        "the rewritten query.\n\n"
+        f"Conversation:\n{format_history(history)}\n\n"
+        f"Follow-up question: {question}"
+    )
+
+    try:
+        response = ollama.chat(
+            model=CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        rewritten = response["message"]["content"].strip()
+    except Exception:
+        return question
+
+    return rewritten or question
+
+
 def ask_model(prompt: str, on_token: Callable[[str], None] | None = None) -> str:
     """Send the completed prompt to the local Ollama chat model.
 
@@ -560,7 +590,8 @@ def answer_question(
     on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run the full RAG question-answer flow, optionally scoped to one source."""
-    results = retrieve(question, source=source)
+    search_query = rewrite_query(question, history) if history else question
+    results = retrieve(search_query, source=source)
 
     # Chroma returns a list per query. We only send one query at a time, so [0].
     docs = results["documents"][0]
