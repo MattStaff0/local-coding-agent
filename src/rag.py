@@ -1,3 +1,4 @@
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,13 @@ class EmptyIndexError(RuntimeError):
 
 # These constants are the main knobs for the RAG system.
 # Keeping them here makes rag.py the source of truth for model/database settings.
+# The model names read the environment first so switching models (3B on the
+# laptop, 12B on the PC) never needs a code edit.
 DOCS_DIR = Path("docs")
 DB_DIR = "chroma_db"
 COLLECTION_NAME = "local_docs"
-EMBED_MODEL = "nomic-embed-text"
-CHAT_MODEL = "qwen2.5-coder:3b"
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_HISTORY_TURNS = 6
 
 
