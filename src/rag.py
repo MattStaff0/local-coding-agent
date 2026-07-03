@@ -527,7 +527,11 @@ def _load_manifest_cached() -> list[dict[str, Any]]:
 
 def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
     records = _load_manifest_cached()
-    subset = [record for record in records if source is None or record["source"] == source]
+    subset = [
+        record
+        for record in records
+        if (source is None or record["source"] == source) and record.get("tokens")
+    ]
 
     if not subset:
         return None
@@ -569,10 +573,22 @@ def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
 
 def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[str]:
     """Rank chunk ids by BM25 keyword relevance to the question."""
-    bm25 = BM25Okapi([_tokenize(document) for document in documents])
+    tokenized = [
+        (item_id, tokens)
+        for item_id, document in zip(ids, documents)
+        if (tokens := _tokenize(document))
+    ]
+    if not tokenized:
+        return []
+
+    bm25 = BM25Okapi([tokens for _, tokens in tokenized])
     scores = bm25.get_scores(_tokenize(question))
 
-    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+    ranked = sorted(
+        zip((item_id for item_id, _ in tokenized), scores),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
 
     # A score of zero or below is treated as no keyword match (BM25's epsilon
     # floor can push common-term scores negative in a tiny corpus).

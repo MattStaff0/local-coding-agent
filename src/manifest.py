@@ -10,6 +10,7 @@ from typing import Any
 
 
 def write_manifest(records: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
 
     with open(tmp, "w", encoding="utf-8") as f:

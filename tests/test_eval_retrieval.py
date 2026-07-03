@@ -118,6 +118,19 @@ def test_negative_entries_score_refusal():
     assert "refusal" in eval_retrieval.format_report(report, k=4)
 
 
+def test_negative_only_golden_scores_refusal_without_positive_metrics_crash():
+    golden = [{"question": "off topic", "expect": "refusal"}]
+
+    def fake_retrieve(question, n_results=4):
+        return {"metadatas": [[]], "distances": [[0.9]], "keyword_hits": [[False]]}
+
+    report = eval_retrieval.evaluate(golden, k=4, retrieve_fn=fake_retrieve)
+
+    assert report["overall"] == {"n": 0, "hit@1": 0.0, "hit@k": 0.0, "mrr": 0.0}
+    assert report["refusal"] == {"n": 1, "correct": 1.0}
+    assert "refusal" in eval_retrieval.format_report(report, k=4)
+
+
 def test_format_report_is_readable() -> None:
     golden = [{"question": "q1", "path": "docs/pytorch/a.md"}]
 

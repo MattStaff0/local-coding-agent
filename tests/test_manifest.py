@@ -19,6 +19,14 @@ def test_load_missing_manifest_returns_empty(tmp_path):
     assert manifest.load_manifest(tmp_path / "nope.jsonl") == []
 
 
+def test_write_manifest_creates_parent_directory(tmp_path):
+    path = tmp_path / "nested" / "manifest.jsonl"
+
+    manifest.write_manifest([{"id": "a-0"}], path)
+
+    assert manifest.load_manifest(path) == [{"id": "a-0"}]
+
+
 def test_ingest_rebuilds_manifest(tmp_path, monkeypatch):
     docs = tmp_path / "docs" / "python"
     docs.mkdir(parents=True)
@@ -119,3 +127,18 @@ def test_bm25_cache_invalidates_on_manifest_change(tmp_path, monkeypatch):
     rebuilt = rag._bm25_for_source(None)
     assert rebuilt is not first
     assert rebuilt[1] == ["b-0"]
+
+
+def test_bm25_ranking_tolerates_all_tokenless_documents():
+    assert rag._bm25_ranking("tensor", ["a-0"], ["and the or"]) == []
+
+
+def test_manifest_bm25_cache_tolerates_all_tokenless_records(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest.write_manifest(
+        [{"id": "a-0", "source": "python", "tokens": []}], manifest_path
+    )
+    monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
+    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+
+    assert rag._bm25_for_source("python") is None

@@ -42,6 +42,9 @@ def rank_of_expected(
 
 def _scores(ranks: list[int | None], k: int) -> dict[str, float | int]:
     n = len(ranks)
+    if n == 0:
+        return {"n": 0, "hit@1": 0.0, "hit@k": 0.0, "mrr": 0.0}
+
     return {
         "n": n,
         "hit@1": sum(1 for r in ranks if r == 1) / n,
