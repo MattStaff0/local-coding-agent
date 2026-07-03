@@ -89,6 +89,35 @@ def test_evaluate_breaks_results_down_per_source() -> None:
     assert report["per_source"]["python"]["hit@k"] == 0.0
 
 
+def test_negative_entries_score_refusal():
+    golden = [
+        {"question": "covered", "path": "docs/python/a.md"},
+        {"question": "off topic", "expect": "refusal"},
+        {"question": "also off topic", "expect": "refusal"},
+    ]
+
+    def fake_retrieve(question, n_results=4):
+        if question == "covered":
+            return {
+                "metadatas": [[{"path": "docs/python/a.md"}]],
+                "distances": [[0.1]],
+                "keyword_hits": [[True]],
+            }
+        # Far from everything, no keyword rescue -> should refuse.
+        refused = question == "off topic"
+        return {
+            "metadatas": [[{"path": "docs/python/other.md"}]],
+            "distances": [[0.9 if refused else 0.1]],
+            "keyword_hits": [[False]],
+        }
+
+    report = eval_retrieval.evaluate(golden, k=4, retrieve_fn=fake_retrieve)
+
+    assert report["refusal"] == {"n": 2, "correct": 0.5}
+    assert report["overall"]["n"] == 1  # negatives never dilute hit metrics
+    assert "refusal" in eval_retrieval.format_report(report, k=4)
+
+
 def test_format_report_is_readable() -> None:
     golden = [{"question": "q1", "path": "docs/pytorch/a.md"}]
 
@@ -110,4 +139,7 @@ def test_golden_file_loads_and_every_path_exists() -> None:
     assert len(golden) >= 15
     for entry in golden:
         assert entry["question"].strip()
+        if entry.get("expect") == "refusal":
+            assert "path" not in entry
+            continue
         assert (REPO_ROOT / entry["path"]).is_file(), entry["path"]
