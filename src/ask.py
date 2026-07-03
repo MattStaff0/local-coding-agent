@@ -21,8 +21,9 @@ from rag import (
 
 NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
 
-# Chat memory now survives restarts; only the recent tail is kept so the file
-# (and the prompt history it feeds) cannot grow without bound.
+# Chat history persists across restarts; only the recent tail is saved so the
+# file cannot grow without bound (the prompt is capped separately by
+# rag.MAX_HISTORY_TURNS).
 HISTORY_FILE = Path("chat_history.json")
 MAX_SAVED_MESSAGES = 100
 
@@ -32,13 +33,31 @@ EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", "study-notes"))
 
 
 def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
-    """Load saved chat history; a missing or corrupt file means a fresh start."""
+    """Load saved chat history; only a missing file is a silent fresh start.
+
+    An unreadable file is preserved as a .bak before the next save can
+    overwrite it — chat history should never be destroyed silently.
+    """
     try:
-        history = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        print(f"Could not read {path} ({error}) — starting with empty history.")
         return []
 
-    return history if isinstance(history, list) else []
+    try:
+        history = json.loads(raw)
+    except json.JSONDecodeError:
+        history = None
+
+    if isinstance(history, list):
+        return history
+
+    backup = path.with_suffix(path.suffix + ".bak")
+    path.rename(backup)
+    print(f"{path} is unreadable — backed up to {backup}, starting fresh.")
+    return []
 
 
 def save_history(
@@ -172,7 +191,9 @@ def apply_source_command(
 
 def chat_loop() -> None:
     """Run an interactive terminal chat with persistent memory."""
-    history = load_history()
+    # Pass the module globals explicitly: default arguments bind at def time,
+    # which would ignore a HISTORY_FILE override (tests, future config).
+    history = load_history(HISTORY_FILE)
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
 
@@ -201,7 +222,13 @@ def chat_loop() -> None:
                 print("Nothing to export yet — ask a question first.")
                 continue
 
-            path = export_note(*last_export)
+            try:
+                path = export_note(*last_export, notes_dir=EXPORT_DIR)
+            except OSError as error:
+                # A bad STUDY_NOTES_DIR must not kill the whole chat session.
+                print(f"Could not write the study note ({error}).")
+                continue
+
             print(f"Saved study note: {path}")
             continue
 
@@ -241,8 +268,13 @@ def chat_loop() -> None:
         # enough context to understand words like "that" or "it".
         history.append({"role": "user", "content": question})
         history.append({"role": "assistant", "content": answer})
-        save_history(history)
         last_export = (question, answer, metadatas)
+
+        try:
+            save_history(history, HISTORY_FILE)
+        except OSError as error:
+            # Losing persistence is worth a warning, not a dead session.
+            print(f"(could not save chat history: {error})")
 
 
 def main() -> None:

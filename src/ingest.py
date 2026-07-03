@@ -20,7 +20,7 @@ def main() -> None:
         verb = "Rebuilt with" if full else "Added/updated"
         print(f"Done. {verb} {chunk_count} chunks in ChromaDB.")
     else:
-        print("Index already up to date.")
+        print("No new or changed docs to embed.")
 
 
 if __name__ == "__main__":

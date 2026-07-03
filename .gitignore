@@ -4,5 +4,7 @@ __pycache__/
 .env
 
 chroma_db/
-data/chat_history.json
+data/
+chat_history.json
+chat_history.json.bak
 study-notes/

@@ -162,10 +162,18 @@ def probe_native_markdown(url: str) -> tuple[str, str] | None:
 
     try:
         text = fetch_page(variant)
-    except requests.RequestException:
+    except requests.HTTPError:
+        # The designed miss: this site simply doesn't serve the convention.
+        return None
+    except requests.RequestException as error:
+        # A timeout/DNS/TLS problem is not a miss — say why the quality
+        # downgrade to HTML scraping is happening.
+        print(f"  markdown probe failed for {variant}: {error} — scraping HTML")
         return None
 
-    # Markdown never leads with a tag; an SPA shell or error page always does.
+    # Heuristic: a leading "<" almost always means an HTML shell or error
+    # page. A rare markdown file that opens with raw HTML is misclassified
+    # and just falls back to HTML scraping.
     if text.lstrip().startswith("<"):
         return None
 
@@ -238,7 +246,8 @@ def fetch_source(
 
     Returns the written file paths and the URLs that failed. Only network
     failures are skipped — a bug in our own code still crashes loudly. With
-    max_age_days set, pages whose existing doc is younger are not re-fetched.
+    max_age_days set, pages whose existing doc is not older than that age are
+    not re-fetched.
     """
     written = []
     failed = []

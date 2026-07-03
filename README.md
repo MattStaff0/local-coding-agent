@@ -205,8 +205,11 @@ python src/ingest.py          # incremental: only changed/new/removed files
 python src/ingest.py --full   # rebuild the whole collection from scratch
 ```
 
-Incremental runs compare a stored content hash per file, so unchanged docs are
-never re-embedded. It is safe to rerun whenever docs change.
+Incremental runs compare a stored fingerprint (file content + embedding
+model) per file, so unchanged docs are never re-embedded — and switching
+`OLLAMA_EMBED_MODEL` automatically re-embeds everything. An index built by an
+older version of this project is detected and rebuilt automatically. It is
+safe to rerun whenever docs change.
 
 ## Ask Questions
 

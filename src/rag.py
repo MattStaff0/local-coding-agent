@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import chromadb
 import chromadb.errors
+import httpx
 import ollama
 from rank_bm25 import BM25Okapi
 
@@ -31,7 +32,8 @@ MAX_HISTORY_TURNS = 6
 
 # Cosine distance (1 - cosine similarity, so 0 = identical, 2 = opposite)
 # beyond which the best match is considered "nothing relevant". Requires the
-# collection to be built in cosine space — re-run ingest after changing spaces.
+# collection to be in cosine space; index_docs rebuilds a legacy L2 index
+# automatically.
 RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
 
 # Hybrid retrieval: how many candidates each ranking contributes before
@@ -263,8 +265,9 @@ def reset_collection(client: chromadb.PersistentClient):
         # confusing "collection already exists" on the create below.
         pass
 
-    # Cosine space makes query distances model-independent (always 0..2), so
-    # RELEVANCE_CUTOFF means the same thing whatever embedding model is used.
+    # Cosine space keeps query distances in a fixed 0..2 range regardless of
+    # embedding model; the RELEVANCE_CUTOFF value itself may still need
+    # retuning per model.
     return client.create_collection(
         name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
@@ -289,8 +292,13 @@ def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) ->
 
 
 def _file_hash(text: str) -> str:
-    """Content fingerprint used to detect changed docs between ingests."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """Fingerprint used to decide whether a doc needs re-embedding.
+
+    The embedding model is part of the fingerprint: switching
+    OLLAMA_EMBED_MODEL must re-embed every file, or the index would keep the
+    old model's vectors while queries use the new one.
+    """
+    return hashlib.sha256(f"{EMBED_MODEL}\n{text}".encode("utf-8")).hexdigest()
 
 
 def _prepare_file(
@@ -327,13 +335,15 @@ def _prepare_file(
 
 
 def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
-    """Embed markdown docs into Chroma; unchanged files are skipped.
+    """Embed markdown docs into Chroma.
 
-    Incremental by default: each file's content hash is stored in its chunk
-    metadata, so a re-ingest only embeds files that changed, adds new ones,
-    and drops records for files deleted from disk. With full=True everything
-    is re-embedded BEFORE the old collection is touched, so a failed rebuild
-    (bad file, Ollama down) never leaves an empty index behind.
+    Incremental by default: each file's fingerprint (content + embed model)
+    is stored in its chunk metadata, so a re-ingest only embeds files that
+    changed, adds new ones, and drops records for files deleted from disk;
+    the return value counts only added/updated chunks. With full=True
+    everything is re-embedded BEFORE the old collection is touched — a failed
+    rebuild (bad file, Ollama down) never leaves an empty index behind — and
+    the return value is the total chunk count.
     """
     # rglob picks up the per-source folders fetch_docs.py creates,
     # like docs/pytorch/ and docs/python/.
@@ -371,6 +381,13 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
         name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
 
+    # get_or_create ignores the metadata when the collection already exists,
+    # so an index built before the cosine switch would silently stay in L2
+    # space and make RELEVANCE_CUTOFF meaningless. Rebuild it once, loudly.
+    if (collection.metadata or {}).get("hnsw:space") != "cosine":
+        print("Existing index is not in cosine space — doing a full rebuild.")
+        return index_docs(docs_dir, full=True)
+
     records = collection.get(include=["metadatas"])
     stored_hashes: dict[str, str] = {}
     for metadata in records["metadatas"]:
@@ -380,6 +397,7 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
     on_disk = {str(doc_file) for doc_file in doc_files}
     for path in stored_hashes:
         if path not in on_disk:
+            print(f"Removing indexed chunks for deleted {path}")
             collection.delete(where={"path": path})
 
     added = 0
@@ -410,9 +428,24 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
     return added
 
 
+# Stopwords never count as keyword evidence: without this, "how do I ..."
+# matches something in nearly every chunk and BM25 hits stop meaning anything
+# (which would also let junk chunks slip past the relevance refusal).
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does",
+    "for", "from", "how", "i", "in", "is", "it", "my", "of", "on", "or",
+    "that", "the", "this", "to", "use", "what", "when", "where", "which",
+    "who", "why", "with", "you",
+}
+
+
 def _tokenize(text: str) -> list[str]:
-    """Split text into lowercase word tokens; `nn.Module` becomes nn, module."""
-    return re.findall(r"[a-z0-9_]+", text.lower())
+    """Lowercase word tokens minus stopwords; `nn.Module` becomes nn, module."""
+    return [
+        token
+        for token in re.findall(r"[a-z0-9_]+", text.lower())
+        if token not in _STOPWORDS
+    ]
 
 
 def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
@@ -437,7 +470,8 @@ def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[s
 
     ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
 
-    # A zero score means no query term appears at all — not a keyword match.
+    # A score of zero or below is treated as no keyword match (BM25's epsilon
+    # floor can push common-term scores negative in a tiny corpus).
     return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
 
 
@@ -454,6 +488,9 @@ def retrieve(
     embeddings catch paraphrases, BM25 catches exact identifiers; pass
     mode="vector" for pure semantic search.
     """
+    if mode not in ("hybrid", "vector"):
+        raise ValueError(f"Unknown retrieval mode '{mode}'; use 'hybrid' or 'vector'.")
+
     client = get_client()
     collection = client.get_collection(name=COLLECTION_NAME)
     where = {"source": source} if source else None
@@ -487,19 +524,20 @@ def retrieve(
             corpus["ids"], corpus["documents"], corpus["metadatas"]
         )
     }
-    # Keep the vector distance where the chunk appeared in the vector
-    # candidates. A BM25-only hit has no measured distance, but a keyword
-    # match IS evidence of relevance — report it exactly at the cutoff so the
-    # "nothing relevant" refusal never triggers on a genuine keyword hit.
+    # Distances stay honest: measured vector distances where known, the
+    # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
+    # relevance is reported separately as keyword_hits — a strong (top-3)
+    # BM25 match is evidence of relevance even when the embedding disagrees,
+    # and answer_question's refusal checks that signal explicitly.
     distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
+    strong_keyword_ids = set(bm25_ids[:3])
 
     return {
         "ids": [top_ids],
         "documents": [[by_id[item_id][0] for item_id in top_ids]],
         "metadatas": [[by_id[item_id][1] for item_id in top_ids]],
-        "distances": [
-            [distance_by_id.get(item_id, RELEVANCE_CUTOFF) for item_id in top_ids]
-        ],
+        "distances": [[distance_by_id.get(item_id, 2.0) for item_id in top_ids]],
+        "keyword_hits": [[item_id in strong_keyword_ids for item_id in top_ids]],
     }
 
 
@@ -618,9 +656,13 @@ def rewrite_query(question: str, history: list[dict[str, str]]) -> str:
             model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
-        rewritten = response["message"]["content"].strip()
-    except Exception:
+    except (httpx.HTTPError, ollama.ResponseError, ConnectionError, TimeoutError) as error:
+        # Infrastructure hiccups degrade gracefully but never silently; a
+        # malformed response shape is a bug and crashes loudly instead.
+        print(f"(query rewrite failed: {error} — searching with the original question)")
         return question
+
+    rewritten = response["message"]["content"].strip()
 
     return rewritten or question
 
@@ -672,10 +714,12 @@ def answer_question(
             "Run 'python src/ingest.py' to rebuild it."
         )
 
-    # Distances may be absent (older mocks/indexes); only refuse when we can
-    # actually see that even the closest chunk is far from the question.
+    # Distances may be absent (test doubles or results that omit them); only
+    # refuse when we can actually see that even the closest chunk is far from
+    # the question AND no chunk got there on a strong keyword match.
     distances = (results.get("distances") or [[]])[0]
-    if distances and min(distances) > RELEVANCE_CUTOFF:
+    keyword_hits = (results.get("keyword_hits") or [[]])[0]
+    if distances and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits):
         raise NoRelevantDocsError(
             "Nothing relevant is indexed for that question — try /sources to "
             "see what's available, or add docs to sources.yaml and re-ingest."
