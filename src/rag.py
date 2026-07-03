@@ -7,6 +7,7 @@ from typing import Any, Callable
 import chromadb
 import chromadb.errors
 import httpx
+import manifest as manifest_module
 import ollama
 from rank_bm25 import BM25Okapi
 
@@ -25,6 +26,7 @@ class NoRelevantDocsError(RuntimeError):
 # laptop, 12B on the PC) never needs a code edit.
 DOCS_DIR = Path("docs")
 DB_DIR = "chroma_db"
+MANIFEST_PATH = Path(os.getenv("RAG_MANIFEST_PATH", "manifest.jsonl"))
 COLLECTION_NAME = "local_docs"
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
@@ -35,6 +37,11 @@ MAX_HISTORY_TURNS = 6
 # collection to be in cosine space; index_docs rebuilds a legacy L2 index
 # automatically.
 RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
+
+# Character budget for the documentation context injected into the prompt.
+# Small local models lose the question when the context crowds it out; RRF
+# order is quality order, so trimming from the tail costs the least.
+PROMPT_CHAR_BUDGET = int(os.getenv("RAG_PROMPT_BUDGET", "12000"))
 
 # Hybrid retrieval: how many candidates each ranking contributes before
 # fusion, and the standard RRF dampening constant.
@@ -310,9 +317,16 @@ def _prepare_file(
 
     print(f"Processing {doc_file.name}: {len(chunks)} chunks")
 
+    if not chunks:
+        # Heading-only/frontmatter-only files produce no chunks; calling
+        # ollama.embed with an empty input is an endpoint error, not a no-op.
+        print(f"Skipping {doc_file.name}: no indexable content")
+        return [], [], [], []
+
     # One embedding call per file instead of per chunk keeps ingest fast
     # once the corpus is hundreds of pages.
     embeddings = embed_batch([chunk["text"] for chunk in chunks])
+    relative_path = doc_file.relative_to(docs_dir).as_posix()
 
     ids = []
     documents = []
@@ -325,6 +339,7 @@ def _prepare_file(
             {
                 "source": source_for(doc_file, docs_dir),
                 "path": str(doc_file),
+                "relative_path": relative_path,
                 "heading": chunk["heading"],
                 "chunk_index": i,
                 "file_hash": digest,
@@ -371,10 +386,12 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
 
         # Everything embedded successfully — only now swap the index.
         collection = reset_collection(get_client())
-        collection.add(
-            ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
-        )
+        if ids:
+            collection.add(
+                ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
+            )
 
+        rebuild_manifest(collection)
         return len(documents)
 
     collection = get_client().get_or_create_collection(
@@ -389,23 +406,31 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
         return index_docs(docs_dir, full=True)
 
     records = collection.get(include=["metadatas"])
+
+    # Indexes built before relative_path landed can't be diffed reliably
+    # (their keys are whatever cwd ingest ran from). Rebuild once, loudly.
+    if any("relative_path" not in metadata for metadata in records["metadatas"]):
+        print("Existing index predates relative-path metadata - doing a full rebuild.")
+        return index_docs(docs_dir, full=True)
+
     stored_hashes: dict[str, str] = {}
     for metadata in records["metadatas"]:
-        stored_hashes[metadata["path"]] = metadata.get("file_hash", "")
+        stored_hashes[metadata["relative_path"]] = metadata.get("file_hash", "")
 
     # Files that vanished from disk take their index records with them.
-    on_disk = {str(doc_file) for doc_file in doc_files}
-    for path in stored_hashes:
-        if path not in on_disk:
-            print(f"Removing indexed chunks for deleted {path}")
-            collection.delete(where={"path": path})
+    on_disk = {doc_file.relative_to(docs_dir).as_posix() for doc_file in doc_files}
+    for relative_path in stored_hashes:
+        if relative_path not in on_disk:
+            print(f"Removing indexed chunks for deleted {relative_path}")
+            collection.delete(where={"relative_path": relative_path})
 
     added = 0
 
     for doc_file in doc_files:
         text = doc_file.read_text(encoding="utf-8")
+        relative_path = doc_file.relative_to(docs_dir).as_posix()
 
-        if stored_hashes.get(str(doc_file)) == _file_hash(text):
+        if stored_hashes.get(relative_path) == _file_hash(text):
             continue
 
         file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
@@ -413,7 +438,7 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
         )
 
         # Replace, not append: the old version may have had more chunks.
-        collection.delete(where={"path": str(doc_file)})
+        collection.delete(where={"relative_path": relative_path})
 
         if file_ids:
             collection.add(
@@ -425,7 +450,36 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
 
         added += len(file_ids)
 
+    rebuild_manifest(collection)
     return added
+
+
+def rebuild_manifest(collection, path: Path | None = None) -> int:
+    """Regenerate the manifest from the collection after ingest.
+
+    One full collection scan per ingest buys zero scans per query.
+    """
+    path = path or MANIFEST_PATH
+    records = collection.get(include=["documents", "metadatas"])
+
+    rows = []
+    for item_id, document, metadata in zip(
+        records["ids"], records["documents"], records["metadatas"]
+    ):
+        rows.append(
+            {
+                "id": item_id,
+                "relative_path": metadata["relative_path"],
+                "source": metadata["source"],
+                "heading": metadata["heading"],
+                "file_hash": metadata["file_hash"],
+                "approx_tokens": len(document) // 4,
+                "tokens": _tokenize(document),
+            }
+        )
+
+    manifest_module.write_manifest(rows, path)
+    return len(rows)
 
 
 # Stopwords never count as keyword evidence: without this, "how do I ..."
@@ -448,6 +502,60 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
+# Loaded once per process and reused across queries; the mtime check makes a
+# fresh ingest visible without restarting chat.
+_manifest_cache: dict[str, Any] = {"mtime": None, "records": [], "bm25": {}}
+_warned_no_manifest = False
+
+
+def _load_manifest_cached() -> list[dict[str, Any]]:
+    try:
+        mtime = MANIFEST_PATH.stat().st_mtime_ns
+    except FileNotFoundError:
+        _manifest_cache.update(mtime=None, records=[], bm25={})
+        return []
+
+    if _manifest_cache["mtime"] != mtime:
+        _manifest_cache.update(
+            mtime=mtime,
+            records=manifest_module.load_manifest(MANIFEST_PATH),
+            bm25={},
+        )
+
+    return _manifest_cache["records"]
+
+
+def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
+    records = _load_manifest_cached()
+    subset = [
+        record
+        for record in records
+        if (source is None or record["source"] == source) and record.get("tokens")
+    ]
+
+    if not subset:
+        return None
+
+    key = source or ""
+    if key not in _manifest_cache["bm25"]:
+        _manifest_cache["bm25"][key] = (
+            BM25Okapi([record["tokens"] for record in subset]),
+            [record["id"] for record in subset],
+        )
+
+    return _manifest_cache["bm25"][key]
+
+
+def _bm25_rank_ids(question: str, bm25: BM25Okapi, ids: list[str]) -> list[str]:
+    """Rank manifest chunk ids by BM25 keyword relevance to the question."""
+    scores = bm25.get_scores(_tokenize(question))
+    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+
+    # A score of zero or below is treated as no keyword match (BM25's epsilon
+    # floor can push common-term scores negative in a tiny corpus).
+    return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
+
+
 def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
     """Fuse rankings with Reciprocal Rank Fusion: score = sum of 1/(k+rank).
 
@@ -465,14 +573,72 @@ def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
 
 def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[str]:
     """Rank chunk ids by BM25 keyword relevance to the question."""
-    bm25 = BM25Okapi([_tokenize(document) for document in documents])
+    tokenized = [
+        (item_id, tokens)
+        for item_id, document in zip(ids, documents)
+        if (tokens := _tokenize(document))
+    ]
+    if not tokenized:
+        return []
+
+    bm25 = BM25Okapi([tokens for _, tokens in tokenized])
     scores = bm25.get_scores(_tokenize(question))
 
-    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+    ranked = sorted(
+        zip((item_id for item_id, _ in tokenized), scores),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
 
     # A score of zero or below is treated as no keyword match (BM25's epsilon
     # floor can push common-term scores negative in a tiny corpus).
     return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
+
+
+def _retrieve_hybrid_slow(
+    question: str,
+    collection,
+    vector_results: dict[str, Any],
+    where: dict[str, str] | None,
+    n_results: int,
+) -> dict[str, Any]:
+    global _warned_no_manifest
+    if not _warned_no_manifest:
+        print("(no manifest - falling back to slow per-query BM25; re-run ingest to fix)")
+        _warned_no_manifest = True
+
+    corpus = collection.get(where=where, include=["documents", "metadatas"])
+
+    if not corpus["ids"]:
+        return vector_results
+
+    vector_ids = vector_results["ids"][0]
+    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+
+    fused = _rrf_scores([vector_ids, bm25_ids])
+    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+
+    by_id = {
+        item_id: (document, metadata)
+        for item_id, document, metadata in zip(
+            corpus["ids"], corpus["documents"], corpus["metadatas"]
+        )
+    }
+    # Distances stay honest: measured vector distances where known, the
+    # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
+    # relevance is reported separately as keyword_hits - a strong (top-3)
+    # BM25 match is evidence of relevance even when the embedding disagrees,
+    # and answer_question's refusal checks that signal explicitly.
+    distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
+    strong_keyword_ids = set(bm25_ids[:3])
+
+    return {
+        "ids": [top_ids],
+        "documents": [[by_id[item_id][0] for item_id in top_ids]],
+        "metadatas": [[by_id[item_id][1] for item_id in top_ids]],
+        "distances": [[distance_by_id.get(item_id, 2.0) for item_id in top_ids]],
+        "keyword_hits": [[item_id in strong_keyword_ids for item_id in top_ids]],
+    }
 
 
 def retrieve(
@@ -507,26 +673,34 @@ def retrieve(
     if mode != "hybrid":
         return vector_results
 
-    corpus = collection.get(where=where, include=["documents", "metadatas"])
+    cached = _bm25_for_source(source)
 
-    if not corpus["ids"]:
-        return vector_results
+    if cached is None:
+        return _retrieve_hybrid_slow(
+            question, collection, vector_results, where, n_results
+        )
 
+    bm25, manifest_ids = cached
     vector_ids = vector_results["ids"][0]
-    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+    bm25_ids = _bm25_rank_ids(question, bm25, manifest_ids)
 
     fused = _rrf_scores([vector_ids, bm25_ids])
     top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
 
+    fetched = collection.get(ids=top_ids, include=["documents", "metadatas"])
     by_id = {
         item_id: (document, metadata)
         for item_id, document, metadata in zip(
-            corpus["ids"], corpus["documents"], corpus["metadatas"]
+            fetched["ids"], fetched["documents"], fetched["metadatas"]
         )
     }
+    # A manifest id can be stale for the few seconds between a collection
+    # delete and the post-ingest manifest rebuild; drop ids Chroma no longer has.
+    top_ids = [item_id for item_id in top_ids if item_id in by_id]
+
     # Distances stay honest: measured vector distances where known, the
     # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
-    # relevance is reported separately as keyword_hits — a strong (top-3)
+    # relevance is reported separately as keyword_hits - a strong (top-3)
     # BM25 match is evidence of relevance even when the embedding disagrees,
     # and answer_question's refusal checks that signal explicitly.
     distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
@@ -598,6 +772,31 @@ def format_context(
     return "\n\n---\n\n".join(blocks)
 
 
+def budget_chunks(
+    docs: list[str],
+    metadatas: list[dict[str, Any]],
+    budget: int | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Keep top-ranked chunks whole until the character budget runs out.
+
+    The first chunk always survives: an oversized best match beats an empty
+    context.
+    """
+    budget = PROMPT_CHAR_BUDGET if budget is None else budget
+    kept_docs: list[str] = []
+    kept_metadatas: list[dict[str, Any]] = []
+    used = 0
+
+    for doc, metadata in zip(docs, metadatas):
+        if kept_docs and used + len(doc) > budget:
+            break
+        kept_docs.append(doc)
+        kept_metadatas.append(metadata)
+        used += len(doc)
+
+    return kept_docs, kept_metadatas
+
+
 def build_prompt(
     question: str,
     context_chunks: list[str],
@@ -631,6 +830,32 @@ Documentation context:
 User question:
 {question}
 """.strip()
+
+
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def citation_problems(answer: str, n_chunks: int) -> list[str]:
+    """Check that the answer's [n] markers refer to real context chunks."""
+    cited = {int(number) for number in _CITATION_RE.findall(answer)}
+    problems = []
+
+    invalid = sorted(number for number in cited if number < 1 or number > n_chunks)
+    if invalid:
+        problems.append(f"cites nonexistent context {invalid}")
+
+    if not cited:
+        problems.append("contains no [n] citations")
+
+    return problems
+
+
+def would_refuse(results: dict[str, Any]) -> bool:
+    """True when retrieval found nothing close enough to answer from."""
+    distances = (results.get("distances") or [[]])[0]
+    keyword_hits = (results.get("keyword_hits") or [[]])[0]
+
+    return bool(distances) and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits)
 
 
 def rewrite_query(question: str, history: list[dict[str, str]]) -> str:
@@ -717,15 +942,26 @@ def answer_question(
     # Distances may be absent (test doubles or results that omit them); only
     # refuse when we can actually see that even the closest chunk is far from
     # the question AND no chunk got there on a strong keyword match.
-    distances = (results.get("distances") or [[]])[0]
-    keyword_hits = (results.get("keyword_hits") or [[]])[0]
-    if distances and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits):
+    if would_refuse(results):
         raise NoRelevantDocsError(
             "Nothing relevant is indexed for that question — try /sources to "
             "see what's available, or add docs to sources.yaml and re-ingest."
         )
 
-    prompt = build_prompt(question, docs, history or [], metadatas)
+    kept_docs, kept_metadatas = budget_chunks(docs, metadatas)
+    if len(kept_docs) < len(docs):
+        print(
+            f"(context trimmed to {len(kept_docs)} of {len(docs)} chunks "
+            "to fit the prompt budget)"
+        )
+
+    prompt = build_prompt(question, kept_docs, history or [], kept_metadatas)
     answer = ask_model(prompt, on_token=on_token)
 
-    return answer, metadatas
+    problems = citation_problems(answer, len(kept_docs))
+    if problems:
+        # Warn-only by design: a wrong warning costs a glance, an automatic
+        # rerun costs a full 12B generation.
+        print(f"\n(grounding warning: {'; '.join(problems)})")
+
+    return answer, kept_metadatas

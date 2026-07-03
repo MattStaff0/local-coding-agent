@@ -50,3 +50,10 @@
   path: docs/mcp/intro.md
 - question: How do I build an MCP client that connects to a server?
   path: docs/mcp/build-client.md
+# Negative controls: nothing indexed covers these - retrieval should refuse.
+- question: How do I deploy a Django app with Kubernetes and Helm?
+  expect: refusal
+- question: What is the recommended brake fluid for a 2019 Honda Civic?
+  expect: refusal
+- question: How do I write a SwiftUI view with a navigation stack?
+  expect: refusal

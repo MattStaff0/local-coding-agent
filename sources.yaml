@@ -17,6 +17,24 @@ pytorch:
 python:
   - https://docs.python.org/3/tutorial/datastructures.html
 
+# --- DL/DM course sources ---
+sklearn:
+  - https://scikit-learn.org/stable/getting_started.html
+  - https://scikit-learn.org/stable/modules/clustering.html
+  - https://scikit-learn.org/stable/modules/cross_validation.html
+  - https://scikit-learn.org/stable/modules/tree.html
+  - https://scikit-learn.org/stable/modules/model_evaluation.html
+
+pandas:
+  - https://pandas.pydata.org/docs/user_guide/10min.html
+  - https://pandas.pydata.org/docs/user_guide/indexing.html
+  - https://pandas.pydata.org/docs/user_guide/groupby.html
+  - https://pandas.pydata.org/docs/user_guide/merging.html
+
+numpy:
+  - https://numpy.org/doc/stable/user/absolute_beginners.html
+  - https://numpy.org/doc/stable/user/basics.broadcasting.html
+
 # --- Tool docs for planned work ---
 # Ollama: streaming answers, batch embeddings, and the future tool-calling
 # agent loop.

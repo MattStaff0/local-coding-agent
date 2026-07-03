@@ -19,16 +19,22 @@ embed each file's chunks in one batched call (nomic-embed-text via Ollama)
 |
 store chunks and embeddings in ChromaDB (cosine space; per-file content hash)
 |
+rebuild manifest.jsonl with chunk ids, metadata, token counts, and BM25 tokens
+|
 rewrite follow-up questions into standalone queries using chat history
 |
-hybrid retrieval: vector similarity + BM25 keyword ranking, fused with RRF
+hybrid retrieval: vector similarity + manifest-backed BM25, fused with RRF
 |
 refuse before answering if even the best chunk is past the relevance cutoff
+|
+trim retrieved chunks to the prompt budget, preserving top-ranked chunks whole
 |
 build a prompt with numbered doc chunks + chat history + question
 (the model must answer ONLY from the docs and cite chunks like [1])
 |
 ask the chat model through Ollama, streaming tokens as they arrive
+|
+warn if the answer has missing or out-of-range citations
 |
 print the answer, then a source legend ([n] -> file § heading)
 ```
@@ -51,6 +57,7 @@ local-ai-coding-agent/
 |-- sources.yaml   # Registry of doc sources and URLs to fetch
 |-- data/          # Local generated/raw data, not committed
 |-- chroma_db/     # Local Chroma vector database, not committed
+|-- manifest.jsonl # Generated lexical sidecar, not committed
 |-- requirements.txt
 `-- README.md
 ```
@@ -62,6 +69,8 @@ local-ai-coding-agent/
 | `OLLAMA_CHAT_MODEL` | `qwen2.5-coder:3b` | Chat + agent model (switch 3B ↔ 12B without code edits) |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `RAG_RELEVANCE_CUTOFF` | `0.65` | Cosine distance past which retrieval refuses to answer |
+| `RAG_PROMPT_BUDGET` | `12000` | Character budget for retrieved documentation context in the prompt |
+| `RAG_MANIFEST_PATH` | `manifest.jsonl` | Path to the generated JSONL chunk manifest used for BM25 retrieval |
 | `STUDY_NOTES_DIR` | `study-notes` | Where `/export` writes study notes (point it at your vault) |
 
 ## What Each Python File Does
@@ -72,9 +81,12 @@ local-ai-coding-agent/
 - heading-section chunking with breadcrumbs
 - batched embedding (`embed_batch`) via Ollama
 - incremental indexing with per-file content hashes (`--full` rebuilds)
-- hybrid retrieval: vector + BM25 fused with Reciprocal Rank Fusion
+- manifest rebuilds after ingest; `manifest.jsonl` is generated and not committed
+- hybrid retrieval: vector + manifest-backed BM25 fused with Reciprocal Rank Fusion
 - follow-up query rewriting from chat history
 - a relevance cutoff that refuses off-topic questions before the model runs
+- prompt-context budgeting that trims lower-ranked chunks from the tail
+- warn-only grounding checks for missing or out-of-range `[n]` citations
 - prompt building and streamed chat model calls
 
 `src/ingest.py` is the indexing command:
@@ -101,7 +113,10 @@ local-ai-coding-agent/
 `src/eval_retrieval.py` measures retrieval quality:
 
 - runs the questions in `tests/golden.yaml` and prints hit-rate@1, hit-rate@k,
-  and MRR, overall and per source — run it before and after retrieval changes
+  and MRR, overall and per source
+- scores negative golden questions with an additional `refusal` line when
+  entries use `expect: refusal`
+- run it before and after retrieval changes
 
 `src/fetch_docs.py` is the docs downloader:
 
@@ -211,6 +226,13 @@ model) per file, so unchanged docs are never re-embedded — and switching
 older version of this project is detected and rebuilt automatically. It is
 safe to rerun whenever docs change.
 
+Every successful ingest also rebuilds `manifest.jsonl`, a generated JSONL
+sidecar with one record per chunk: id, relative path, source, heading, file
+hash, approximate token count, and pre-tokenized lexical terms. Retrieval uses
+that manifest for BM25 so each question does not pull the full corpus out of
+Chroma. If the manifest is missing, retrieval falls back to the old slow
+per-query BM25 path and prints a notice; rerun ingestion to regenerate it.
+
 ## Ask Questions
 
 Start interactive chat:
@@ -246,6 +268,10 @@ You can also ask one question directly:
 ```bash
 python src/ask.py "How do I create a neural network in PyTorch?"
 ```
+
+Answers are checked after generation for citation shape. If the model omits
+`[n]` citations or cites a chunk number that was not sent in the prompt, the
+CLI prints a grounding warning but does not rerun or reject the answer.
 
 ## Current Memory Behavior
 

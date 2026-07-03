@@ -42,6 +42,9 @@ def rank_of_expected(
 
 def _scores(ranks: list[int | None], k: int) -> dict[str, float | int]:
     n = len(ranks)
+    if n == 0:
+        return {"n": 0, "hit@1": 0.0, "hit@k": 0.0, "mrr": 0.0}
+
     return {
         "n": n,
         "hit@1": sum(1 for r in ranks if r == 1) / n,
@@ -58,8 +61,16 @@ def evaluate(
     """Run every golden question through retrieval and score the ranks."""
     ranks: list[int | None] = []
     ranks_by_source: dict[str, list[int | None]] = {}
+    positives = [entry for entry in golden if entry.get("expect") != "refusal"]
+    negatives = [entry for entry in golden if entry.get("expect") == "refusal"]
 
-    for entry in golden:
+    refusals = 0
+    for entry in negatives:
+        results = retrieve_fn(entry["question"], n_results=k)
+        if rag.would_refuse(results):
+            refusals += 1
+
+    for entry in positives:
         results = retrieve_fn(entry["question"], n_results=k)
         rank = rank_of_expected(entry["path"], results["metadatas"][0])
 
@@ -68,13 +79,17 @@ def evaluate(
         source = Path(entry["path"]).parts[1]
         ranks_by_source.setdefault(source, []).append(rank)
 
-    return {
+    report = {
         "overall": _scores(ranks, k),
         "per_source": {
             source: _scores(source_ranks, k)
             for source, source_ranks in sorted(ranks_by_source.items())
         },
     }
+    if negatives:
+        report["refusal"] = {"n": len(negatives), "correct": refusals / len(negatives)}
+
+    return report
 
 
 def format_report(report: dict[str, Any], k: int) -> str:
@@ -92,6 +107,11 @@ def format_report(report: dict[str, Any], k: int) -> str:
     lines.extend(
         line(source, scores) for source, scores in report["per_source"].items()
     )
+    if "refusal" in report:
+        refusal = report["refusal"]
+        lines.append(
+            f"{'refusal':<12} n={refusal['n']:<3} correct={refusal['correct']:.2f}"
+        )
 
     return "\n".join(lines)
 

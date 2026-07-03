@@ -82,6 +82,7 @@ TOOL_SCHEMAS = [
                     },
                     "start_line": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "First line to read. Defaults to 1.",
                     },
                 },
