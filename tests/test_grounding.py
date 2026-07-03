@@ -75,7 +75,7 @@ def test_answer_question_builds_labeled_prompt(
         },
     )
 
-    def fake_ask(prompt: str) -> str:
+    def fake_ask(prompt: str, on_token=None) -> str:
         captured["prompt"] = prompt
         return "Use torch.tensor(data) [1]."
 

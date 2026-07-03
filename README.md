@@ -15,20 +15,22 @@ docs/*.md
 split docs into chunks by markdown heading sections
 (each chunk keeps its heading breadcrumb, e.g. "Tensors > Initializing a Tensor")
 |
-embed each chunk with nomic-embed-text through Ollama
+embed each file's chunks in one batched call (nomic-embed-text via Ollama)
 |
-store chunks and embeddings in ChromaDB
+store chunks and embeddings in ChromaDB (cosine space; per-file content hash)
 |
-embed the user's question
+rewrite follow-up questions into standalone queries using chat history
 |
-retrieve the most similar chunks
+hybrid retrieval: vector similarity + BM25 keyword ranking, fused with RRF
+|
+refuse before answering if even the best chunk is past the relevance cutoff
 |
 build a prompt with numbered doc chunks + chat history + question
 (the model must answer ONLY from the docs and cite chunks like [1])
 |
-ask qwen2.5-coder through Ollama
+ask the chat model through Ollama, streaming tokens as they arrive
 |
-print a source legend ([n] -> file § heading), then the answer
+print the answer, then a source legend ([n] -> file § heading)
 ```
 
 ## Project Structure
@@ -37,11 +39,15 @@ print a source legend ([n] -> file § heading), then the answer
 local-ai-coding-agent/
 |-- docs/          # Markdown documentation to index
 |-- src/
-|   |-- rag.py        # Source of truth for RAG logic
-|   |-- ingest.py     # Rebuilds the Chroma docs index
-|   |-- ask.py        # Terminal chat interface
-|   `-- fetch_docs.py # Fetches official docs into docs/<source>/
+|   |-- rag.py            # Source of truth for RAG logic
+|   |-- ingest.py         # Updates the Chroma docs index (incremental)
+|   |-- ask.py            # Terminal chat interface
+|   |-- fetch_docs.py     # Fetches official docs into docs/<source>/
+|   |-- agent.py          # Tool-calling agent loop (/agent, CLI)
+|   |-- agent_tools.py    # Sandboxed list/grep/read tools for the agent
+|   `-- eval_retrieval.py # Scores retrieval against tests/golden.yaml
 |-- tests/         # Pytest suite (no Ollama needed to run it)
+|-- .github/       # CI: pytest on every push and pull request
 |-- sources.yaml   # Registry of doc sources and URLs to fetch
 |-- data/          # Local generated/raw data, not committed
 |-- chroma_db/     # Local Chroma vector database, not committed
@@ -49,39 +55,63 @@ local-ai-coding-agent/
 `-- README.md
 ```
 
+## Configuration (environment variables)
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OLLAMA_CHAT_MODEL` | `qwen2.5-coder:3b` | Chat + agent model (switch 3B ↔ 12B without code edits) |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `RAG_RELEVANCE_CUTOFF` | `0.65` | Cosine distance past which retrieval refuses to answer |
+| `STUDY_NOTES_DIR` | `study-notes` | Where `/export` writes study notes (point it at your vault) |
+
 ## What Each Python File Does
 
 `src/rag.py` contains the main RAG system:
 
-- configuration for docs, ChromaDB, and Ollama models
-- document chunking
-- embedding text with `nomic-embed-text`
-- rebuilding the Chroma collection
-- retrieving relevant chunks for a question
-- formatting temporary chat history
-- building the final prompt
-- calling the local chat model
+- configuration for docs, ChromaDB, and Ollama models (env-overridable)
+- heading-section chunking with breadcrumbs
+- batched embedding (`embed_batch`) via Ollama
+- incremental indexing with per-file content hashes (`--full` rebuilds)
+- hybrid retrieval: vector + BM25 fused with Reciprocal Rank Fusion
+- follow-up query rewriting from chat history
+- a relevance cutoff that refuses off-topic questions before the model runs
+- prompt building and streamed chat model calls
 
 `src/ingest.py` is the indexing command:
 
-- reads markdown files from `docs/`
-- calls `rag.index_docs()`
-- rebuilds the local ChromaDB collection
+- incremental by default: embeds only changed/new files, drops deleted ones
+- `python src/ingest.py --full` rebuilds the whole collection
 
 `src/ask.py` is the terminal interface:
 
 - starts an interactive chat if no question is passed
-- supports one-shot questions from the command line
-- keeps temporary memory while the chat process is open
+- streams answers token-by-token
+- persists chat history across sessions (`chat_history.json`)
 - prints a citation legend mapping each `[n]` in the answer to `file § heading`
 - supports `/sources` and `/source <name>` to scope answers to one source
+- `/agent <question>` searches this codebase live with the tool-calling agent
+- `/export` saves the last answer + citations as a markdown study note
+
+`src/agent.py` + `src/agent_tools.py` are the tool-calling agent:
+
+- the model drives sandboxed `list_files` / `grep` / `read_file` tools in a
+  loop with guardrails (iteration cap, repeated-call breaker, output caps)
+- run it directly: `python src/agent.py "where is the similarity search?"`
+
+`src/eval_retrieval.py` measures retrieval quality:
+
+- runs the questions in `tests/golden.yaml` and prints hit-rate@1, hit-rate@k,
+  and MRR, overall and per source — run it before and after retrieval changes
 
 `src/fetch_docs.py` is the docs downloader:
 
 - reads `sources.yaml` (source name -> list of doc URLs)
-- downloads each page and converts HTML to markdown (URLs ending in `.md` or
-  `.txt` are saved as-is, no conversion)
+- probes for native markdown first (the `llms.txt` convention: `<page>.md`
+  next to each HTML page) and uses it verbatim when the site serves it
+- otherwise downloads the page and converts HTML to markdown (URLs ending in
+  `.md` or `.txt` are saved as-is, no conversion)
 - writes `docs/<source>/<page-slug>.md` with the URL and fetch date on top
+- `--refresh 30d` re-downloads only pages older than the given age
 - skips failed pages, then summarizes failures and exits nonzero if any
 
 ## Setup
@@ -171,11 +201,15 @@ the source name `general`.
 Run ingestion after adding or editing docs:
 
 ```bash
-python src/ingest.py
+python src/ingest.py          # incremental: only changed/new/removed files
+python src/ingest.py --full   # rebuild the whole collection from scratch
 ```
 
-This deletes and recreates the `local_docs` Chroma collection, so chunks are not
-duplicated. It is safe to rerun whenever docs change.
+Incremental runs compare a stored fingerprint (file content + embedding
+model) per file, so unchanged docs are never re-embedded — and switching
+`OLLAMA_EMBED_MODEL` automatically re-embeds everything. An index built by an
+older version of this project is detected and rebuilt automatically. It is
+safe to rerun whenever docs change.
 
 ## Ask Questions
 
@@ -215,14 +249,14 @@ python src/ask.py "How do I create a neural network in PyTorch?"
 
 ## Current Memory Behavior
 
-The chat has temporary session memory.
+The chat has persistent memory:
 
-That means:
-
-- it remembers previous turns while `python src/ask.py` is still running
-- it uses recent chat history to understand follow-up questions
-- it forgets the conversation when you exit
-- it does not save chat history to disk yet
+- it remembers previous turns and uses them to understand follow-up questions
+  (follow-ups are rewritten into standalone queries before retrieval)
+- history is saved to `chat_history.json` (not committed) and restored on the
+  next run; only the most recent 100 messages are kept
+- `/export` turns the last answer and its citations into a study note under
+  `STUDY_NOTES_DIR`
 
 ## When to Reingest
 
@@ -245,6 +279,7 @@ Reingest after:
 Good next improvements:
 
 1. Add more official docs slowly (grow `sources.yaml`).
-2. Add repo indexing for local source code.
-3. Add a configurable chat model, such as switching between 3B and 12B.
-4. Save chat history to disk.
+2. Add repo indexing for local source code (see the code-indexing options doc).
+3. Connect MCP servers to the agent loop (see the MCP options doc in the vault).
+4. Add a local cross-encoder reranker on top of hybrid retrieval.
+5. Crawl mode for the scraper (fetch everything under a URL prefix, politely).

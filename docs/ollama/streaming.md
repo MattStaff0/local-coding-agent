@@ -1,12 +1,18 @@
 ---
-url: https://docs.ollama.com/capabilities/streaming
+url: https://docs.ollama.com/capabilities/streaming.md
 fetched: 2026-07-02
 ---
 
-[Guide](/)[Integrations](/integrations)[API Reference](/api/introduction)
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.ollama.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Streaming
 
 Streaming allows you to render text as it is produced by the model.
+
 Streaming is enabled by default through the REST API, but disabled by default in the SDKs.
+
 To enable streaming in the SDKs, set the `stream` parameter to `True`.
 
 ## Key streaming concepts
@@ -17,86 +23,83 @@ To enable streaming in the SDKs, set the `stream` parameter to `True`.
 
 ## Handling streamed chunks
 
-It is necessary to accumulate the partial fields in order to maintain the history of the conversation. This is particularly important for tool calling where the thinking, tool call from the model, and the executed tool result must be passed back to the model in the next request.
+<Note> It is necessary to accumulate the partial fields in order to maintain the history of the conversation. This is particularly important for tool calling where the thinking, tool call from the model, and the executed tool result must be passed back to the model in the next request. </Note>
 
-* Python
-* JavaScript
+<Tabs>
+  <Tab title="Python">
+    ```python theme={"system"}
+    from ollama import chat
 
-```
-from ollama import chat
+    stream = chat(
+      model='qwen3',
+      messages=[{'role': 'user', 'content': 'What is 17 × 23?'}],
+      stream=True,
+    )
 
-stream = chat(
-  model='qwen3',
-  messages=[{'role': 'user', 'content': 'What is 17 × 23?'}],
-  stream=True,
-)
+    in_thinking = False
+    content = ''
+    thinking = ''
+    for chunk in stream:
+      if chunk.message.thinking:
+        if not in_thinking:
+          in_thinking = True
+          print('Thinking:\n', end='', flush=True)
+        print(chunk.message.thinking, end='', flush=True)
+        # accumulate the partial thinking 
+        thinking += chunk.message.thinking
+      elif chunk.message.content:
+        if in_thinking:
+          in_thinking = False
+          print('\n\nAnswer:\n', end='', flush=True)
+        print(chunk.message.content, end='', flush=True)
+        # accumulate the partial content
+        content += chunk.message.content
 
-in_thinking = False
-content = ''
-thinking = ''
-for chunk in stream:
-  if chunk.message.thinking:
-    if not in_thinking:
-      in_thinking = True
-      print('Thinking:\n', end='', flush=True)
-    print(chunk.message.thinking, end='', flush=True)
-    # accumulate the partial thinking 
-    thinking += chunk.message.thinking
-  elif chunk.message.content:
-    if in_thinking:
-      in_thinking = False
-      print('\n\nAnswer:\n', end='', flush=True)
-    print(chunk.message.content, end='', flush=True)
-    # accumulate the partial content
-    content += chunk.message.content
+      # append the accumulated fields to the messages for the next request
+      new_messages = [{ role: 'assistant', thinking: thinking, content: content }]
+    ```
+  </Tab>
 
-  # append the accumulated fields to the messages for the next request
-  new_messages = [{ role: 'assistant', thinking: thinking, content: content }]
-```
+  <Tab title="JavaScript">
+    ```javascript theme={"system"}
+    import ollama from 'ollama'
 
-```
-import ollama from 'ollama'
+    async function main() {
+      const stream = await ollama.chat({
+        model: 'qwen3',
+        messages: [{ role: 'user', content: 'What is 17 × 23?' }],
+        stream: true,
+      })
 
-async function main() {
-  const stream = await ollama.chat({
-    model: 'qwen3',
-    messages: [{ role: 'user', content: 'What is 17 × 23?' }],
-    stream: true,
-  })
+      let inThinking = false
+      let content = ''
+      let thinking = ''
 
-  let inThinking = false
-  let content = ''
-  let thinking = ''
-
-  for await (const chunk of stream) {
-    if (chunk.message.thinking) {
-      if (!inThinking) {
-        inThinking = true
-        process.stdout.write('Thinking:\n')
+      for await (const chunk of stream) {
+        if (chunk.message.thinking) {
+          if (!inThinking) {
+            inThinking = true
+            process.stdout.write('Thinking:\n')
+          }
+          process.stdout.write(chunk.message.thinking)
+          // accumulate the partial thinking
+          thinking += chunk.message.thinking
+        } else if (chunk.message.content) {
+          if (inThinking) {
+            inThinking = false
+            process.stdout.write('\n\nAnswer:\n')
+          }
+          process.stdout.write(chunk.message.content)
+          // accumulate the partial content
+          content += chunk.message.content
+        }
       }
-      process.stdout.write(chunk.message.thinking)
-      // accumulate the partial thinking
-      thinking += chunk.message.thinking
-    } else if (chunk.message.content) {
-      if (inThinking) {
-        inThinking = false
-        process.stdout.write('\n\nAnswer:\n')
-      }
-      process.stdout.write(chunk.message.content)
-      // accumulate the partial content
-      content += chunk.message.content
+
+      // append the accumulated fields to the messages for the next request
+      new_messages = [{ role: 'assistant', thinking: thinking, content: content }]
     }
-  }
 
-  // append the accumulated fields to the messages for the next request
-  new_messages = [{ role: 'assistant', thinking: thinking, content: content }]
-}
-
-main().catch(console.error)
-```
-
-[Previous](/cloud)[Thinking
-
-Next](/capabilities/thinking)
-
-⌘I
+    main().catch(console.error)
+    ```
+  </Tab>
+</Tabs>

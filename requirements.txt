@@ -5,3 +5,4 @@ markdownify
 ollama
 pyyaml
 pytest
+rank_bm25

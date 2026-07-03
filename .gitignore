@@ -5,3 +5,6 @@ __pycache__/
 
 chroma_db/
 data/
+chat_history.json
+chat_history.json.bak
+study-notes/

@@ -126,7 +126,7 @@ def test_answer_question_passes_source_to_retrieve(
         return {"documents": [["chunk"]], "metadatas": [[{"source": "pytorch"}]]}
 
     monkeypatch.setattr(rag, "retrieve", fake_retrieve)
-    monkeypatch.setattr(rag, "ask_model", lambda prompt: "an answer")
+    monkeypatch.setattr(rag, "ask_model", lambda prompt, on_token=None: "an answer")
 
     answer, metadatas = rag.answer_question("q", history=[], source="pytorch")
 

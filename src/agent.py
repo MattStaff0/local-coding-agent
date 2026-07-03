@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,9 @@ import ollama
 
 from agent_tools import grep_files, list_files, read_file
 
-AGENT_MODEL = "qwen2.5-coder:3b"
+# Same env override as rag.CHAT_MODEL: the agent loop runs on whatever chat
+# model the machine has, without a code edit.
+AGENT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_ITERATIONS = 8
 
 # Terse on purpose: a 3B-12B model follows short, imperative instructions

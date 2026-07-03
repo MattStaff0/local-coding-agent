@@ -1,24 +1,45 @@
+import hashlib
+import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import chromadb
 import chromadb.errors
+import httpx
 import ollama
+from rank_bm25 import BM25Okapi
 
 
 class EmptyIndexError(RuntimeError):
     """Raised when retrieval finds nothing — usually an empty or stale index."""
 
 
+class NoRelevantDocsError(RuntimeError):
+    """Raised when even the best retrieved chunk is too far from the question."""
+
+
 # These constants are the main knobs for the RAG system.
 # Keeping them here makes rag.py the source of truth for model/database settings.
+# The model names read the environment first so switching models (3B on the
+# laptop, 12B on the PC) never needs a code edit.
 DOCS_DIR = Path("docs")
 DB_DIR = "chroma_db"
 COLLECTION_NAME = "local_docs"
-EMBED_MODEL = "nomic-embed-text"
-CHAT_MODEL = "qwen2.5-coder:3b"
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_HISTORY_TURNS = 6
+
+# Cosine distance (1 - cosine similarity, so 0 = identical, 2 = opposite)
+# beyond which the best match is considered "nothing relevant". Requires the
+# collection to be in cosine space; index_docs rebuilds a legacy L2 index
+# automatically.
+RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
+
+# Hybrid retrieval: how many candidates each ranking contributes before
+# fusion, and the standard RRF dampening constant.
+HYBRID_CANDIDATES = 20
+RRF_K = 60
 
 
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
@@ -215,13 +236,18 @@ def chunk_markdown(text: str, chunk_size: int = 1500) -> list[dict[str, str]]:
     return chunks
 
 
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Embed many texts in one Ollama call — much faster than one call each."""
+    response = ollama.embed(
+        model=EMBED_MODEL,
+        input=texts,
+    )
+    return [list(vector) for vector in response["embeddings"]]
+
+
 def embed(text: str) -> list[float]:
     """Ask Ollama's embedding model to turn text into a vector of numbers."""
-    response = ollama.embeddings(
-        model=EMBED_MODEL,
-        prompt=text,
-    )
-    return response["embedding"]
+    return embed_batch([text])[0]
 
 
 def get_client() -> chromadb.PersistentClient:
@@ -239,7 +265,12 @@ def reset_collection(client: chromadb.PersistentClient):
         # confusing "collection already exists" on the create below.
         pass
 
-    return client.create_collection(name=COLLECTION_NAME)
+    # Cosine space keeps query distances in a fixed 0..2 range regardless of
+    # embedding model; the RELEVANCE_CUTOFF value itself may still need
+    # retuning per model.
+    return client.create_collection(
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
 
 
 def source_for(doc_file: Path, docs_dir: Path = DOCS_DIR) -> str:
@@ -260,12 +291,59 @@ def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) ->
     return f"{safe_path}-{chunk_index}"
 
 
-def index_docs(docs_dir: Path = DOCS_DIR) -> int:
-    """Read markdown docs, embed every chunk, and store them in Chroma.
+def _file_hash(text: str) -> str:
+    """Fingerprint used to decide whether a doc needs re-embedding.
 
-    All reading, chunking, and embedding happens BEFORE the old collection is
-    touched, so a failed run (bad file, Ollama down) never leaves an empty
-    index behind.
+    The embedding model is part of the fingerprint: switching
+    OLLAMA_EMBED_MODEL must re-embed every file, or the index would keep the
+    old model's vectors while queries use the new one.
+    """
+    return hashlib.sha256(f"{EMBED_MODEL}\n{text}".encode("utf-8")).hexdigest()
+
+
+def _prepare_file(
+    doc_file: Path, text: str, docs_dir: Path
+) -> tuple[list[str], list[str], list[list[float]], list[dict[str, Any]]]:
+    """Chunk and embed one doc file; returns (ids, documents, embeddings, metadatas)."""
+    chunks = chunk_markdown(text)
+    digest = _file_hash(text)
+
+    print(f"Processing {doc_file.name}: {len(chunks)} chunks")
+
+    # One embedding call per file instead of per chunk keeps ingest fast
+    # once the corpus is hundreds of pages.
+    embeddings = embed_batch([chunk["text"] for chunk in chunks])
+
+    ids = []
+    documents = []
+    metadatas = []
+
+    for i, chunk in enumerate(chunks):
+        ids.append(chunk_id_for(doc_file, i, docs_dir))
+        documents.append(chunk["text"])
+        metadatas.append(
+            {
+                "source": source_for(doc_file, docs_dir),
+                "path": str(doc_file),
+                "heading": chunk["heading"],
+                "chunk_index": i,
+                "file_hash": digest,
+            }
+        )
+
+    return ids, documents, embeddings, metadatas
+
+
+def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
+    """Embed markdown docs into Chroma.
+
+    Incremental by default: each file's fingerprint (content + embed model)
+    is stored in its chunk metadata, so a re-ingest only embeds files that
+    changed, adds new ones, and drops records for files deleted from disk;
+    the return value counts only added/updated chunks. With full=True
+    everything is re-embedded BEFORE the old collection is touched — a failed
+    rebuild (bad file, Ollama down) never leaves an empty index behind — and
+    the return value is the total chunk count.
     """
     # rglob picks up the per-source folders fetch_docs.py creates,
     # like docs/pytorch/ and docs/python/.
@@ -275,66 +353,192 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
         print(f"No docs found in {docs_dir}/ — keeping the existing index.")
         return 0
 
-    ids = []
-    documents = []
-    embeddings = []
-    metadatas = []
+    if full:
+        ids: list[str] = []
+        documents: list[str] = []
+        embeddings: list[list[float]] = []
+        metadatas: list[dict[str, Any]] = []
+
+        for doc_file in doc_files:
+            text = doc_file.read_text(encoding="utf-8")
+            file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
+                doc_file, text, docs_dir
+            )
+            ids.extend(file_ids)
+            documents.extend(file_docs)
+            embeddings.extend(file_embeddings)
+            metadatas.extend(file_metadatas)
+
+        # Everything embedded successfully — only now swap the index.
+        collection = reset_collection(get_client())
+        collection.add(
+            ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
+        )
+
+        return len(documents)
+
+    collection = get_client().get_or_create_collection(
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
+
+    # get_or_create ignores the metadata when the collection already exists,
+    # so an index built before the cosine switch would silently stay in L2
+    # space and make RELEVANCE_CUTOFF meaningless. Rebuild it once, loudly.
+    if (collection.metadata or {}).get("hnsw:space") != "cosine":
+        print("Existing index is not in cosine space — doing a full rebuild.")
+        return index_docs(docs_dir, full=True)
+
+    records = collection.get(include=["metadatas"])
+    stored_hashes: dict[str, str] = {}
+    for metadata in records["metadatas"]:
+        stored_hashes[metadata["path"]] = metadata.get("file_hash", "")
+
+    # Files that vanished from disk take their index records with them.
+    on_disk = {str(doc_file) for doc_file in doc_files}
+    for path in stored_hashes:
+        if path not in on_disk:
+            print(f"Removing indexed chunks for deleted {path}")
+            collection.delete(where={"path": path})
+
+    added = 0
 
     for doc_file in doc_files:
         text = doc_file.read_text(encoding="utf-8")
-        chunks = chunk_markdown(text)
 
-        print(f"Processing {doc_file.name}: {len(chunks)} chunks")
+        if stored_hashes.get(str(doc_file)) == _file_hash(text):
+            continue
 
-        for i, chunk in enumerate(chunks):
-            # Each chunk needs its own id, breadcrumb-prefixed text, embedding,
-            # and metadata.
-            ids.append(chunk_id_for(doc_file, i, docs_dir))
-            documents.append(chunk["text"])
-            embeddings.append(embed(chunk["text"]))
-            metadatas.append(
-                {
-                    "source": source_for(doc_file, docs_dir),
-                    "path": str(doc_file),
-                    "heading": chunk["heading"],
-                    "chunk_index": i,
-                }
+        file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
+            doc_file, text, docs_dir
+        )
+
+        # Replace, not append: the old version may have had more chunks.
+        collection.delete(where={"path": str(doc_file)})
+
+        if file_ids:
+            collection.add(
+                ids=file_ids,
+                documents=file_docs,
+                embeddings=file_embeddings,
+                metadatas=file_metadatas,
             )
 
-    # Everything embedded successfully — only now is it safe to swap the index.
-    client = get_client()
-    collection = reset_collection(client)
+        added += len(file_ids)
 
-    collection.add(
-        ids=ids,
-        documents=documents,
-        embeddings=embeddings,
-        metadatas=metadatas,
-    )
+    return added
 
-    return len(documents)
+
+# Stopwords never count as keyword evidence: without this, "how do I ..."
+# matches something in nearly every chunk and BM25 hits stop meaning anything
+# (which would also let junk chunks slip past the relevance refusal).
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does",
+    "for", "from", "how", "i", "in", "is", "it", "my", "of", "on", "or",
+    "that", "the", "this", "to", "use", "what", "when", "where", "which",
+    "who", "why", "with", "you",
+}
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase word tokens minus stopwords; `nn.Module` becomes nn, module."""
+    return [
+        token
+        for token in re.findall(r"[a-z0-9_]+", text.lower())
+        if token not in _STOPWORDS
+    ]
+
+
+def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
+    """Fuse rankings with Reciprocal Rank Fusion: score = sum of 1/(k+rank).
+
+    Rank-based fusion sidesteps the scale mismatch between BM25 scores and
+    cosine distances entirely.
+    """
+    scores: dict[str, float] = {}
+
+    for ranking in rankings:
+        for rank, item_id in enumerate(ranking, start=1):
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+
+    return scores
+
+
+def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[str]:
+    """Rank chunk ids by BM25 keyword relevance to the question."""
+    bm25 = BM25Okapi([_tokenize(document) for document in documents])
+    scores = bm25.get_scores(_tokenize(question))
+
+    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+
+    # A score of zero or below is treated as no keyword match (BM25's epsilon
+    # floor can push common-term scores negative in a tiny corpus).
+    return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
 
 
 def retrieve(
     question: str,
     n_results: int = 4,
     source: str | None = None,
+    mode: str = "hybrid",
 ) -> dict[str, Any]:
     """Find the most relevant indexed doc chunks for a user question.
 
     Pass a source name (a top-level docs/ folder) to search only that source.
+    The default hybrid mode fuses vector and BM25 keyword rankings with RRF —
+    embeddings catch paraphrases, BM25 catches exact identifiers; pass
+    mode="vector" for pure semantic search.
     """
+    if mode not in ("hybrid", "vector"):
+        raise ValueError(f"Unknown retrieval mode '{mode}'; use 'hybrid' or 'vector'.")
+
     client = get_client()
     collection = client.get_collection(name=COLLECTION_NAME)
+    where = {"source": source} if source else None
 
     # The question has to be embedded with the same model used for the docs.
     question_embedding = embed(question)
 
-    return collection.query(
+    vector_results = collection.query(
         query_embeddings=[question_embedding],
-        n_results=n_results,
-        where={"source": source} if source else None,
+        n_results=HYBRID_CANDIDATES if mode == "hybrid" else n_results,
+        where=where,
     )
+
+    if mode != "hybrid":
+        return vector_results
+
+    corpus = collection.get(where=where, include=["documents", "metadatas"])
+
+    if not corpus["ids"]:
+        return vector_results
+
+    vector_ids = vector_results["ids"][0]
+    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+
+    fused = _rrf_scores([vector_ids, bm25_ids])
+    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+
+    by_id = {
+        item_id: (document, metadata)
+        for item_id, document, metadata in zip(
+            corpus["ids"], corpus["documents"], corpus["metadatas"]
+        )
+    }
+    # Distances stay honest: measured vector distances where known, the
+    # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
+    # relevance is reported separately as keyword_hits — a strong (top-3)
+    # BM25 match is evidence of relevance even when the embedding disagrees,
+    # and answer_question's refusal checks that signal explicitly.
+    distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
+    strong_keyword_ids = set(bm25_ids[:3])
+
+    return {
+        "ids": [top_ids],
+        "documents": [[by_id[item_id][0] for item_id in top_ids]],
+        "metadatas": [[by_id[item_id][1] for item_id in top_ids]],
+        "distances": [[distance_by_id.get(item_id, 2.0) for item_id in top_ids]],
+        "keyword_hits": [[item_id in strong_keyword_ids for item_id in top_ids]],
+    }
 
 
 def list_sources() -> list[str]:
@@ -429,25 +633,74 @@ User question:
 """.strip()
 
 
-def ask_model(prompt: str) -> str:
-    """Send the completed prompt to the local Ollama chat model."""
-    response = ollama.chat(
+def rewrite_query(question: str, history: list[dict[str, str]]) -> str:
+    """Rewrite a follow-up like "how do I train it?" into a standalone query.
+
+    Pronouns embed terribly without their referent, so retrieval for
+    follow-ups works off a model-written standalone rewrite. Any failure
+    falls back to the original question — a worse query beats no answer.
+    """
+    if not history:
+        return question
+
+    prompt = (
+        "Rewrite the user's follow-up question as one standalone search "
+        "query, using the conversation for missing context. Reply with ONLY "
+        "the rewritten query.\n\n"
+        f"Conversation:\n{format_history(history)}\n\n"
+        f"Follow-up question: {question}"
+    )
+
+    try:
+        response = ollama.chat(
+            model=CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except (httpx.HTTPError, ollama.ResponseError, ConnectionError, TimeoutError) as error:
+        # Infrastructure hiccups degrade gracefully but never silently; a
+        # malformed response shape is a bug and crashes loudly instead.
+        print(f"(query rewrite failed: {error} — searching with the original question)")
+        return question
+
+    rewritten = response["message"]["content"].strip()
+
+    return rewritten or question
+
+
+def ask_model(prompt: str, on_token: Callable[[str], None] | None = None) -> str:
+    """Send the completed prompt to the local Ollama chat model.
+
+    The response is streamed; on_token (when given) receives each token as it
+    arrives so the caller can print incrementally instead of waiting for a
+    12B model to finish the whole answer.
+    """
+    parts: list[str] = []
+
+    for part in ollama.chat(
         model=CHAT_MODEL,
         messages=[
             {"role": "user", "content": prompt},
         ],
-    )
+        stream=True,
+    ):
+        token = part["message"]["content"]
+        parts.append(token)
 
-    return response["message"]["content"]
+        if on_token is not None:
+            on_token(token)
+
+    return "".join(parts)
 
 
 def answer_question(
     question: str,
     history: list[dict[str, str]] | None = None,
     source: str | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run the full RAG question-answer flow, optionally scoped to one source."""
-    results = retrieve(question, source=source)
+    search_query = rewrite_query(question, history) if history else question
+    results = retrieve(search_query, source=source)
 
     # Chroma returns a list per query. We only send one query at a time, so [0].
     docs = results["documents"][0]
@@ -461,7 +714,18 @@ def answer_question(
             "Run 'python src/ingest.py' to rebuild it."
         )
 
+    # Distances may be absent (test doubles or results that omit them); only
+    # refuse when we can actually see that even the closest chunk is far from
+    # the question AND no chunk got there on a strong keyword match.
+    distances = (results.get("distances") or [[]])[0]
+    keyword_hits = (results.get("keyword_hits") or [[]])[0]
+    if distances and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits):
+        raise NoRelevantDocsError(
+            "Nothing relevant is indexed for that question — try /sources to "
+            "see what's available, or add docs to sources.yaml and re-ingest."
+        )
+
     prompt = build_prompt(question, docs, history or [], metadatas)
-    answer = ask_model(prompt)
+    answer = ask_model(prompt, on_token=on_token)
 
     return answer, metadatas

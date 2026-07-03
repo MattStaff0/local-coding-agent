@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -263,7 +264,13 @@ def test_fetch_source_writes_one_file_per_url(
         "https://example.com/a.html": "<main><h1>A</h1><p>alpha</p></main>",
         "https://example.com/b.html": "<main><h1>B</h1><p>beta</p></main>",
     }
-    monkeypatch.setattr(fetch_docs, "fetch_page", lambda url: pages[url])
+
+    def fake_fetch(url: str) -> str:
+        if url not in pages:  # the .md probe: this site has no native markdown
+            raise requests.RequestException("404")
+        return pages[url]
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", fake_fetch)
 
     written, failed = fetch_source("demo", list(pages), docs_dir=tmp_path)
 
@@ -373,7 +380,7 @@ def test_main_exits_nonzero_when_pages_failed(
     monkeypatch.setattr(
         fetch_docs,
         "fetch_source",
-        lambda name, urls, docs_dir=None: ([], list(urls)),
+        lambda name, urls, docs_dir=None, max_age_days=None: ([], list(urls)),
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -383,3 +390,174 @@ def test_main_exits_nonzero_when_pages_failed(
     out = capsys.readouterr().out
     assert "https://example.com/a.html" in out
     assert "failed" in out.lower()
+
+
+# --- Native markdown probing (llms.txt convention) ---
+
+
+def test_markdown_variant_swaps_html_suffix() -> None:
+    assert (
+        fetch_docs.markdown_variant_url("https://ex.com/docs/page.html")
+        == "https://ex.com/docs/page.md"
+    )
+
+
+def test_markdown_variant_appends_md_to_extensionless_pages() -> None:
+    assert (
+        fetch_docs.markdown_variant_url("https://ex.com/capabilities/tools")
+        == "https://ex.com/capabilities/tools.md"
+    )
+
+
+def test_markdown_variant_probes_llms_txt_for_site_roots() -> None:
+    assert (
+        fetch_docs.markdown_variant_url("https://ex.com/")
+        == "https://ex.com/llms.txt"
+    )
+
+
+def test_markdown_variant_skips_urls_already_markdown() -> None:
+    assert fetch_docs.markdown_variant_url("https://ex.com/page.md") is None
+    assert fetch_docs.markdown_variant_url("https://ex.com/llms.txt") is None
+
+
+def test_probe_hit_uses_native_markdown_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        if url.endswith(".md"):
+            return FakeResponse("# Native\n\nreal markdown")
+        raise AssertionError(f"HTML should not be fetched, got {url}")
+
+    monkeypatch.setattr(fetch_docs.requests, "get", fake_get)
+
+    written, failed = fetch_docs.fetch_source(
+        "ex", ["https://ex.com/docs/tools"], docs_dir=tmp_path
+    )
+
+    assert not failed
+    content = written[0].read_text(encoding="utf-8")
+    assert "# Native\n\nreal markdown" in content
+    # Provenance records the markdown variant actually fetched.
+    assert "url: https://ex.com/docs/tools.md" in content
+
+
+def test_probe_miss_falls_back_to_html_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        if url.endswith(".md"):
+            return FakeResponse("nope", status_error=requests.HTTPError("404"))
+        return FakeResponse("<html><main><h1>T</h1><p>body</p></main></html>")
+
+    monkeypatch.setattr(fetch_docs.requests, "get", fake_get)
+
+    written, failed = fetch_docs.fetch_source(
+        "ex", ["https://ex.com/docs/tools"], docs_dir=tmp_path
+    )
+
+    assert not failed
+    content = written[0].read_text(encoding="utf-8")
+    assert "# T" in content
+    assert "url: https://ex.com/docs/tools\n" in content
+
+
+def test_probe_that_returns_html_is_treated_as_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        if url.endswith(".md"):
+            # Soft-404: the site serves its SPA shell at any path.
+            return FakeResponse("<!DOCTYPE html><html><body>app</body></html>")
+        return FakeResponse("<html><main><h1>Real</h1></main></html>")
+
+    monkeypatch.setattr(fetch_docs.requests, "get", fake_get)
+
+    written, failed = fetch_docs.fetch_source(
+        "ex", ["https://ex.com/docs/tools"], docs_dir=tmp_path
+    )
+
+    assert not failed
+    assert "# Real" in written[0].read_text(encoding="utf-8")
+
+
+# --- Staleness refresh (--refresh Nd) ---
+
+
+def test_parse_refresh_extracts_days_and_remaining_args() -> None:
+    assert fetch_docs.parse_refresh(["--refresh", "30d", "ollama"]) == (30, ["ollama"])
+    assert fetch_docs.parse_refresh(["pytorch"]) == (None, ["pytorch"])
+
+
+def test_parse_refresh_rejects_malformed_values() -> None:
+    with pytest.raises(ValueError, match="refresh"):
+        fetch_docs.parse_refresh(["--refresh", "soon"])
+    with pytest.raises(ValueError, match="refresh"):
+        fetch_docs.parse_refresh(["--refresh"])
+
+
+def test_doc_age_days_reads_the_fetched_date(tmp_path: Path) -> None:
+    doc = tmp_path / "page.md"
+    doc.write_text(
+        "---\nurl: https://ex.com/p\nfetched: 2026-06-01\n---\n\n# P\n",
+        encoding="utf-8",
+    )
+
+    age = fetch_docs.doc_age_days(doc, today=date(2026, 7, 1))
+
+    assert age == 30
+
+
+def test_doc_age_days_is_none_without_frontmatter(tmp_path: Path) -> None:
+    doc = tmp_path / "page.md"
+    doc.write_text("# no frontmatter\n", encoding="utf-8")
+
+    assert fetch_docs.doc_age_days(doc, today=date(2026, 7, 1)) is None
+
+
+def test_fetch_source_skips_docs_fresher_than_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fresh = tmp_path / "demo" / "fresh.md"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_text(
+        f"---\nurl: https://ex.com/fresh\nfetched: {date.today().isoformat()}\n---\n\nok\n",
+        encoding="utf-8",
+    )
+
+    def fake_fetch(url: str) -> str:
+        raise AssertionError(f"fresh page must not be fetched: {url}")
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", fake_fetch)
+
+    written, failed = fetch_source(
+        "demo", ["https://ex.com/fresh"], docs_dir=tmp_path, max_age_days=30
+    )
+
+    assert written == []
+    assert failed == []
+
+
+def test_fetch_source_refetches_docs_older_than_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = tmp_path / "demo" / "stale.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "---\nurl: https://ex.com/stale\nfetched: 2020-01-01\n---\n\nold\n",
+        encoding="utf-8",
+    )
+
+    def fake_fetch(url: str) -> str:
+        if url.endswith(".md"):
+            raise requests.RequestException("404")
+        return "<main><h1>New</h1></main>"
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", fake_fetch)
+
+    written, failed = fetch_source(
+        "demo", ["https://ex.com/stale"], docs_dir=tmp_path, max_age_days=30
+    )
+
+    assert len(written) == 1
+    assert "New" in written[0].read_text(encoding="utf-8")
