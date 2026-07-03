@@ -319,6 +319,7 @@ def _prepare_file(
     # One embedding call per file instead of per chunk keeps ingest fast
     # once the corpus is hundreds of pages.
     embeddings = embed_batch([chunk["text"] for chunk in chunks])
+    relative_path = doc_file.relative_to(docs_dir).as_posix()
 
     ids = []
     documents = []
@@ -331,6 +332,7 @@ def _prepare_file(
             {
                 "source": source_for(doc_file, docs_dir),
                 "path": str(doc_file),
+                "relative_path": relative_path,
                 "heading": chunk["heading"],
                 "chunk_index": i,
                 "file_hash": digest,
@@ -396,23 +398,31 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
         return index_docs(docs_dir, full=True)
 
     records = collection.get(include=["metadatas"])
+
+    # Indexes built before relative_path landed can't be diffed reliably
+    # (their keys are whatever cwd ingest ran from). Rebuild once, loudly.
+    if any("relative_path" not in metadata for metadata in records["metadatas"]):
+        print("Existing index predates relative-path metadata - doing a full rebuild.")
+        return index_docs(docs_dir, full=True)
+
     stored_hashes: dict[str, str] = {}
     for metadata in records["metadatas"]:
-        stored_hashes[metadata["path"]] = metadata.get("file_hash", "")
+        stored_hashes[metadata["relative_path"]] = metadata.get("file_hash", "")
 
     # Files that vanished from disk take their index records with them.
-    on_disk = {str(doc_file) for doc_file in doc_files}
-    for path in stored_hashes:
-        if path not in on_disk:
-            print(f"Removing indexed chunks for deleted {path}")
-            collection.delete(where={"path": path})
+    on_disk = {doc_file.relative_to(docs_dir).as_posix() for doc_file in doc_files}
+    for relative_path in stored_hashes:
+        if relative_path not in on_disk:
+            print(f"Removing indexed chunks for deleted {relative_path}")
+            collection.delete(where={"relative_path": relative_path})
 
     added = 0
 
     for doc_file in doc_files:
         text = doc_file.read_text(encoding="utf-8")
+        relative_path = doc_file.relative_to(docs_dir).as_posix()
 
-        if stored_hashes.get(str(doc_file)) == _file_hash(text):
+        if stored_hashes.get(relative_path) == _file_hash(text):
             continue
 
         file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
@@ -420,7 +430,7 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
         )
 
         # Replace, not append: the old version may have had more chunks.
-        collection.delete(where={"path": str(doc_file)})
+        collection.delete(where={"relative_path": relative_path})
 
         if file_ids:
             collection.add(
