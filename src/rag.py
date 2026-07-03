@@ -1,7 +1,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import chromadb
 import chromadb.errors
@@ -445,22 +445,36 @@ User question:
 """.strip()
 
 
-def ask_model(prompt: str) -> str:
-    """Send the completed prompt to the local Ollama chat model."""
-    response = ollama.chat(
+def ask_model(prompt: str, on_token: Callable[[str], None] | None = None) -> str:
+    """Send the completed prompt to the local Ollama chat model.
+
+    The response is streamed; on_token (when given) receives each token as it
+    arrives so the caller can print incrementally instead of waiting for a
+    12B model to finish the whole answer.
+    """
+    parts: list[str] = []
+
+    for part in ollama.chat(
         model=CHAT_MODEL,
         messages=[
             {"role": "user", "content": prompt},
         ],
-    )
+        stream=True,
+    ):
+        token = part["message"]["content"]
+        parts.append(token)
 
-    return response["message"]["content"]
+        if on_token is not None:
+            on_token(token)
+
+    return "".join(parts)
 
 
 def answer_question(
     question: str,
     history: list[dict[str, str]] | None = None,
     source: str | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run the full RAG question-answer flow, optionally scoped to one source."""
     results = retrieve(question, source=source)
@@ -487,6 +501,6 @@ def answer_question(
         )
 
     prompt = build_prompt(question, docs, history or [], metadatas)
-    answer = ask_model(prompt)
+    answer = ask_model(prompt, on_token=on_token)
 
     return answer, metadatas

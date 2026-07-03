@@ -36,6 +36,11 @@ def describe_error(error: Exception) -> str:
     return f"Unexpected error ({type(error).__name__}):\n{traceback.format_exc()}"
 
 
+def print_token(token: str) -> None:
+    """Print one streamed answer token immediately, without a newline."""
+    print(token, end="", flush=True)
+
+
 def print_sources(metadatas: list[dict[str, Any]]) -> None:
     """Show the citation legend: which chunk each [n] in the answer refers to."""
     print("\nSources:")
@@ -131,15 +136,19 @@ def chat_loop() -> None:
             print(message)
             continue
 
+        print("\nAssistant:\n")
+
         try:
-            answer, metadatas = answer_question(question, history, active_source)
+            # The answer streams to the terminal as the model writes it.
+            answer, metadatas = answer_question(
+                question, history, active_source, on_token=print_token
+            )
         except Exception as error:
-            print(f"\n{describe_error(error)}")
+            print(describe_error(error))
             continue
 
+        print()
         print_sources(metadatas)
-        print("\nAssistant:\n")
-        print(answer)
 
         # Save the turn after the model answers so follow-up questions have
         # enough context to understand words like "that" or "it".
@@ -157,15 +166,16 @@ def main() -> None:
     # python src/ask.py "How do I make a PyTorch model?"
     question = " ".join(sys.argv[1:])
 
+    print("Answer:\n")
+
     try:
-        answer, metadatas = answer_question(question, history=[])
+        answer, metadatas = answer_question(question, history=[], on_token=print_token)
     except Exception as error:
         print(describe_error(error))
         raise SystemExit(1)
 
+    print()
     print_sources(metadatas)
-    print("\nAnswer:\n")
-    print(answer)
 
 
 if __name__ == "__main__":

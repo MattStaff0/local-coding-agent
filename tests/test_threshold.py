@@ -57,7 +57,7 @@ def test_close_context_still_reaches_the_model(
         "retrieve",
         lambda question, n_results=4, source=None: fake_results([0.2, 0.9]),
     )
-    monkeypatch.setattr(rag, "ask_model", lambda prompt: "grounded answer")
+    monkeypatch.setattr(rag, "ask_model", lambda prompt, on_token=None: "grounded answer")
 
     answer, metadatas = rag.answer_question("what is a tensor?")
 
@@ -76,7 +76,7 @@ def test_results_without_distances_are_not_refused(
     monkeypatch.setattr(
         rag, "retrieve", lambda question, n_results=4, source=None: results
     )
-    monkeypatch.setattr(rag, "ask_model", lambda prompt: "answer")
+    monkeypatch.setattr(rag, "ask_model", lambda prompt, on_token=None: "answer")
 
     answer, _ = rag.answer_question("q")
 
