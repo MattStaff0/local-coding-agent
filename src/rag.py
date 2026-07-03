@@ -7,6 +7,7 @@ from typing import Any, Callable
 import chromadb
 import chromadb.errors
 import httpx
+import manifest as manifest_module
 import ollama
 from rank_bm25 import BM25Okapi
 
@@ -25,6 +26,7 @@ class NoRelevantDocsError(RuntimeError):
 # laptop, 12B on the PC) never needs a code edit.
 DOCS_DIR = Path("docs")
 DB_DIR = "chroma_db"
+MANIFEST_PATH = Path(os.getenv("RAG_MANIFEST_PATH", "manifest.jsonl"))
 COLLECTION_NAME = "local_docs"
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
@@ -384,6 +386,7 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
                 ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
             )
 
+        rebuild_manifest(collection)
         return len(documents)
 
     collection = get_client().get_or_create_collection(
@@ -442,7 +445,36 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
 
         added += len(file_ids)
 
+    rebuild_manifest(collection)
     return added
+
+
+def rebuild_manifest(collection, path: Path | None = None) -> int:
+    """Regenerate the manifest from the collection after ingest.
+
+    One full collection scan per ingest buys zero scans per query.
+    """
+    path = path or MANIFEST_PATH
+    records = collection.get(include=["documents", "metadatas"])
+
+    rows = []
+    for item_id, document, metadata in zip(
+        records["ids"], records["documents"], records["metadatas"]
+    ):
+        rows.append(
+            {
+                "id": item_id,
+                "relative_path": metadata["relative_path"],
+                "source": metadata["source"],
+                "heading": metadata["heading"],
+                "file_hash": metadata["file_hash"],
+                "approx_tokens": len(document) // 4,
+                "tokens": _tokenize(document),
+            }
+        )
+
+    manifest_module.write_manifest(rows, path)
+    return len(rows)
 
 
 # Stopwords never count as keyword evidence: without this, "how do I ..."
