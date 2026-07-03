@@ -1,6 +1,8 @@
 """Regression tests for the 2026-07-03 external (Codex) review findings."""
 from pathlib import Path
 
+from agent import TOOL_SCHEMAS
+from agent_tools import read_file
 import rag
 
 
@@ -95,3 +97,20 @@ def test_legacy_index_without_relative_path_triggers_full_rebuild(
 
     assert "full rebuild" in capsys.readouterr().out.lower()
     assert added > 0  # full=True return counts every chunk
+
+
+def test_read_file_clamps_nonpositive_start_line(tmp_path):
+    (tmp_path / "f.py").write_text("first\nsecond\n", encoding="utf-8")
+
+    assert read_file(tmp_path, "f.py", 0) == read_file(tmp_path, "f.py", 1)
+    assert read_file(tmp_path, "f.py", -3) == read_file(tmp_path, "f.py", 1)
+    assert "1: first" in read_file(tmp_path, "f.py", 0)
+
+
+def test_read_file_schema_declares_minimum_start_line():
+    read_schema = next(
+        s for s in TOOL_SCHEMAS if s["function"]["name"] == "read_file"
+    )
+    start_line = read_schema["function"]["parameters"]["properties"]["start_line"]
+
+    assert start_line["minimum"] == 1

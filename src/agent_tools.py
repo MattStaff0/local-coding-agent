@@ -88,6 +88,9 @@ def grep_files(root: Path, pattern: str, subdir: str = ".") -> str:
 
 def read_file(root: Path, path: str, start_line: int = 1) -> str:
     """Read one file with numbered lines, truncating with a resume hint."""
+    # A 3B model happily sends start_line=0; slicing with -1 would silently
+    # return the wrong lines, which is worse than correcting the argument.
+    start_line = max(1, start_line)
     target = _resolve_inside(root, path)
 
     if not target.is_file():
