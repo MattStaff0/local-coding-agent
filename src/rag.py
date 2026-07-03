@@ -816,6 +816,32 @@ User question:
 """.strip()
 
 
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def citation_problems(answer: str, n_chunks: int) -> list[str]:
+    """Check that the answer's [n] markers refer to real context chunks."""
+    cited = {int(number) for number in _CITATION_RE.findall(answer)}
+    problems = []
+
+    invalid = sorted(number for number in cited if number < 1 or number > n_chunks)
+    if invalid:
+        problems.append(f"cites nonexistent context {invalid}")
+
+    if not cited:
+        problems.append("contains no [n] citations")
+
+    return problems
+
+
+def would_refuse(results: dict[str, Any]) -> bool:
+    """True when retrieval found nothing close enough to answer from."""
+    distances = (results.get("distances") or [[]])[0]
+    keyword_hits = (results.get("keyword_hits") or [[]])[0]
+
+    return bool(distances) and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits)
+
+
 def rewrite_query(question: str, history: list[dict[str, str]]) -> str:
     """Rewrite a follow-up like "how do I train it?" into a standalone query.
 
@@ -900,9 +926,7 @@ def answer_question(
     # Distances may be absent (test doubles or results that omit them); only
     # refuse when we can actually see that even the closest chunk is far from
     # the question AND no chunk got there on a strong keyword match.
-    distances = (results.get("distances") or [[]])[0]
-    keyword_hits = (results.get("keyword_hits") or [[]])[0]
-    if distances and min(distances) > RELEVANCE_CUTOFF and not any(keyword_hits):
+    if would_refuse(results):
         raise NoRelevantDocsError(
             "Nothing relevant is indexed for that question — try /sources to "
             "see what's available, or add docs to sources.yaml and re-ingest."
@@ -917,5 +941,11 @@ def answer_question(
 
     prompt = build_prompt(question, kept_docs, history or [], kept_metadatas)
     answer = ask_model(prompt, on_token=on_token)
+
+    problems = citation_problems(answer, len(kept_docs))
+    if problems:
+        # Warn-only by design: a wrong warning costs a glance, an automatic
+        # rerun costs a full 12B generation.
+        print(f"\n(grounding warning: {'; '.join(problems)})")
 
     return answer, kept_metadatas

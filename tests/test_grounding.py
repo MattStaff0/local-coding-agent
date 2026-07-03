@@ -85,3 +85,44 @@ def test_answer_question_builds_labeled_prompt(
 
     assert "[1] docs/pytorch/tensorqs-tutorial.md" in captured["prompt"]
     assert metadatas == METADATAS
+
+
+def test_valid_citations_pass():
+    assert rag.citation_problems("Use torch [1] and cuda [2].", n_chunks=2) == []
+
+
+def test_out_of_range_citation_flagged():
+    problems = rag.citation_problems("See [3].", n_chunks=2)
+    assert problems == ["cites nonexistent context [3]"]
+
+
+def test_missing_citations_flagged():
+    problems = rag.citation_problems("Just do it.", n_chunks=2)
+    assert problems == ["contains no [n] citations"]
+
+
+def test_would_refuse_matches_answer_question_logic():
+    far = {"distances": [[0.9]], "keyword_hits": [[False]]}
+    keyword_saved = {"distances": [[0.9]], "keyword_hits": [[True]]}
+    close = {"distances": [[0.1]], "keyword_hits": [[False]]}
+
+    assert rag.would_refuse(far) is True
+    assert rag.would_refuse(keyword_saved) is False
+    assert rag.would_refuse(close) is False
+
+
+def test_answer_question_warns_on_bad_citations(monkeypatch, capsys):
+    results = {
+        "ids": [["a"]],
+        "documents": [["doc text"]],
+        "metadatas": [[{"source": "s", "path": "p", "heading": "h"}]],
+        "distances": [[0.1]],
+        "keyword_hits": [[False]],
+    }
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: results)
+    monkeypatch.setattr(rag, "ask_model", lambda prompt, on_token=None: "Trust me [7].")
+
+    rag.answer_question("q")
+
+    out = capsys.readouterr().out
+    assert "grounding warning" in out and "[7]" in out
