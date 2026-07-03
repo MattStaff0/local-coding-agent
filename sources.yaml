@@ -1,0 +1,45 @@
+# Registry of documentation sources for src/fetch_docs.py.
+# Each top-level key becomes a folder under docs/, and each URL is fetched
+# and converted to markdown: docs/<source>/<page-slug>.md
+
+# --- Learning corpus: PyTorch "Learn the Basics" series (complete) ---
+pytorch:
+  - https://docs.pytorch.org/tutorials/beginner/basics/intro.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/quickstart_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/data_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/transforms_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html
+  - https://docs.pytorch.org/tutorials/beginner/basics/saveloadrun_tutorial.html
+
+python:
+  - https://docs.python.org/3/tutorial/datastructures.html
+
+# --- Tool docs for planned work ---
+# Ollama: streaming answers, batch embeddings, and the future tool-calling
+# agent loop.
+ollama:
+  - https://docs.ollama.com/capabilities/tool-calling
+  - https://docs.ollama.com/capabilities/streaming
+  - https://docs.ollama.com/capabilities/embeddings
+
+# Chroma: collections, querying, metadata filters (used by source scoping,
+# and by future incremental ingest / code indexing).
+chroma:
+  - https://docs.trychroma.com/docs/overview/getting-started
+  - https://docs.trychroma.com/docs/collections/manage-collections
+  - https://docs.trychroma.com/docs/querying-collections/query-and-get
+  - https://docs.trychroma.com/docs/querying-collections/metadata-filtering
+
+# Qwen: function calling, for the future agent-loop milestone.
+# Raw markdown from the docs repo — qwen.readthedocs.io rate-limits scrapers.
+qwen:
+  - https://raw.githubusercontent.com/QwenLM/Qwen3/main/docs/source/framework/function_call.md
+
+# Retrieval tooling: BM25 keyword search + cross-encoder reranking, for
+# future hybrid-retrieval work.
+retrieval:
+  - https://github.com/dorianbrown/rank_bm25
+  - https://sbert.net/docs/cross_encoder/usage/usage.html

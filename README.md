@@ -12,7 +12,8 @@ docs, understand a repo, suggest patches, and eventually run safe commands.
 ```text
 docs/*.md
 |
-split docs into chunks
+split docs into chunks by markdown heading sections
+(each chunk keeps its heading breadcrumb, e.g. "Tensors > Initializing a Tensor")
 |
 embed each chunk with nomic-embed-text through Ollama
 |
@@ -22,11 +23,12 @@ embed the user's question
 |
 retrieve the most similar chunks
 |
-build a prompt with docs + chat history + question
+build a prompt with numbered doc chunks + chat history + question
+(the model must answer ONLY from the docs and cite chunks like [1])
 |
 ask qwen2.5-coder through Ollama
 |
-print the answer and retrieved sources
+print a source legend ([n] -> file § heading), then the answer
 ```
 
 ## Project Structure
@@ -35,9 +37,12 @@ print the answer and retrieved sources
 local-ai-coding-agent/
 |-- docs/          # Markdown documentation to index
 |-- src/
-|   |-- rag.py     # Source of truth for RAG logic
-|   |-- ingest.py  # Rebuilds the Chroma docs index
-|   `-- ask.py     # Terminal chat interface
+|   |-- rag.py        # Source of truth for RAG logic
+|   |-- ingest.py     # Rebuilds the Chroma docs index
+|   |-- ask.py        # Terminal chat interface
+|   `-- fetch_docs.py # Fetches official docs into docs/<source>/
+|-- tests/         # Pytest suite (no Ollama needed to run it)
+|-- sources.yaml   # Registry of doc sources and URLs to fetch
 |-- data/          # Local generated/raw data, not committed
 |-- chroma_db/     # Local Chroma vector database, not committed
 |-- requirements.txt
@@ -68,32 +73,44 @@ local-ai-coding-agent/
 - starts an interactive chat if no question is passed
 - supports one-shot questions from the command line
 - keeps temporary memory while the chat process is open
-- prints retrieved source chunks before each answer
+- prints a citation legend mapping each `[n]` in the answer to `file § heading`
+- supports `/sources` and `/source <name>` to scope answers to one source
+
+`src/fetch_docs.py` is the docs downloader:
+
+- reads `sources.yaml` (source name -> list of doc URLs)
+- downloads each page and converts HTML to markdown (URLs ending in `.md` or
+  `.txt` are saved as-is, no conversion)
+- writes `docs/<source>/<page-slug>.md` with the URL and fetch date on top
+- skips failed pages, then summarizes failures and exits nonzero if any
 
 ## Setup
 
-Create and activate a virtual environment:
+Create and activate a virtual environment.
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-If PowerShell blocks activation, run this once:
+If PowerShell blocks activation, run this once, then activate again:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-Then activate again:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
 Install Python dependencies:
 
-```powershell
+```bash
 pip install -r requirements.txt
 ```
 
@@ -105,37 +122,56 @@ https://ollama.com/download
 
 Pull the models:
 
-```powershell
+```bash
 ollama pull nomic-embed-text
 ollama pull qwen2.5-coder:3b
 ```
 
+## Fetch Official Docs
+
+`sources.yaml` maps a source name to the doc pages to download. Each source
+becomes a folder under `docs/`:
+
+```yaml
+pytorch:
+  - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
+python:
+  - https://docs.python.org/3/tutorial/datastructures.html
+```
+
+Fetch everything in the registry (or just one source by name):
+
+```bash
+python src/fetch_docs.py
+python src/fetch_docs.py pytorch
+```
+
+Pages are converted from HTML to markdown (navigation, footers, and scripts are
+stripped; the main article content is kept), and URLs that already point at
+`.md` or `.txt` files are saved as-is with no conversion. Each page lands at
+`docs/<source>/<page-slug>.md` with the original URL and fetch date in a small
+frontmatter block. Re-run ingestion afterwards to index the new files.
+
 ## Add Docs
 
-Put markdown files in `docs/`.
-
-Example:
-
-```text
-docs/python-data-structures.md
-docs/pytorch-basics.md
-```
-
-The current ingestion code uses `docs/**/*.md`, so docs can also be organized
-into folders later:
+The top-level folder under `docs/` is the doc's **source name** — it is what
+`/source <name>` filters on in chat, so organize docs into per-source folders:
 
 ```text
-docs/python/data-structures.md
-docs/pytorch/build-model.md
-docs/system-design/caching.md
+docs/python/data-structures.md   -> source "python"
+docs/pytorch/build-model.md      -> source "pytorch"
+docs/system-design/caching.md    -> source "system-design"
 ```
+
+Markdown files placed directly in `docs/` still work; they are indexed under
+the source name `general`.
 
 ## Build the Index
 
 Run ingestion after adding or editing docs:
 
-```powershell
-python src\ingest.py
+```bash
+python src/ingest.py
 ```
 
 This deletes and recreates the `local_docs` Chroma collection, so chunks are not
@@ -145,8 +181,8 @@ duplicated. It is safe to rerun whenever docs change.
 
 Start interactive chat:
 
-```powershell
-python src\ask.py
+```bash
+python src/ask.py
 ```
 
 Example questions:
@@ -157,6 +193,14 @@ What does the forward method do?
 How do Python lists work?
 ```
 
+Scope answers to one documentation source (a top-level `docs/` folder):
+
+```text
+/sources          list indexed sources
+/source pytorch   answer only from docs/pytorch/
+/source all       search everything again
+```
+
 Exit chat:
 
 ```text
@@ -165,8 +209,8 @@ Exit chat:
 
 You can also ask one question directly:
 
-```powershell
-python src\ask.py "How do I create a neural network in PyTorch?"
+```bash
+python src/ask.py "How do I create a neural network in PyTorch?"
 ```
 
 ## Current Memory Behavior
@@ -175,7 +219,7 @@ The chat has temporary session memory.
 
 That means:
 
-- it remembers previous turns while `python src\ask.py` is still running
+- it remembers previous turns while `python src/ask.py` is still running
 - it uses recent chat history to understand follow-up questions
 - it forgets the conversation when you exit
 - it does not save chat history to disk yet
@@ -184,8 +228,8 @@ That means:
 
 Run this again whenever docs change:
 
-```powershell
-python src\ingest.py
+```bash
+python src/ingest.py
 ```
 
 Reingest after:
@@ -200,9 +244,7 @@ Reingest after:
 
 Good next improvements:
 
-1. Add more official docs slowly.
-2. Tighten the prompt for stricter doc-grounded answers.
-3. Add better source citations in answers.
-4. Add a docs scraper/converter for selected official pages.
-5. Add repo indexing for local source code.
-6. Add a configurable chat model, such as switching between 3B and 7B.
+1. Add more official docs slowly (grow `sources.yaml`).
+2. Add repo indexing for local source code.
+3. Add a configurable chat model, such as switching between 3B and 12B.
+4. Save chat history to disk.
