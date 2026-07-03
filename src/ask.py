@@ -7,7 +7,13 @@ import chromadb.errors
 import httpx
 
 from agent import format_agent_reply, parse_agent_command, run_agent
-from rag import EmptyIndexError, answer_question, list_sources, source_legend
+from rag import (
+    EmptyIndexError,
+    NoRelevantDocsError,
+    answer_question,
+    list_sources,
+    source_legend,
+)
 
 NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
 
@@ -21,7 +27,7 @@ def describe_error(error: Exception) -> str:
     if isinstance(error, chromadb.errors.NotFoundError):
         return NO_INDEX_HINT
 
-    if isinstance(error, EmptyIndexError):
+    if isinstance(error, (EmptyIndexError, NoRelevantDocsError)):
         return str(error)
 
     if isinstance(error, (httpx.TransportError, ConnectionError)):

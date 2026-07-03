@@ -12,6 +12,10 @@ class EmptyIndexError(RuntimeError):
     """Raised when retrieval finds nothing — usually an empty or stale index."""
 
 
+class NoRelevantDocsError(RuntimeError):
+    """Raised when even the best retrieved chunk is too far from the question."""
+
+
 # These constants are the main knobs for the RAG system.
 # Keeping them here makes rag.py the source of truth for model/database settings.
 # The model names read the environment first so switching models (3B on the
@@ -22,6 +26,11 @@ COLLECTION_NAME = "local_docs"
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_HISTORY_TURNS = 6
+
+# Cosine distance (1 - cosine similarity, so 0 = identical, 2 = opposite)
+# beyond which the best match is considered "nothing relevant". Requires the
+# collection to be built in cosine space — re-run ingest after changing spaces.
+RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
 
 
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
@@ -242,7 +251,11 @@ def reset_collection(client: chromadb.PersistentClient):
         # confusing "collection already exists" on the create below.
         pass
 
-    return client.create_collection(name=COLLECTION_NAME)
+    # Cosine space makes query distances model-independent (always 0..2), so
+    # RELEVANCE_CUTOFF means the same thing whatever embedding model is used.
+    return client.create_collection(
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
 
 
 def source_for(doc_file: Path, docs_dir: Path = DOCS_DIR) -> str:
@@ -462,6 +475,15 @@ def answer_question(
         raise EmptyIndexError(
             "Retrieval returned no chunks — the index may be empty or stale. "
             "Run 'python src/ingest.py' to rebuild it."
+        )
+
+    # Distances may be absent (older mocks/indexes); only refuse when we can
+    # actually see that even the closest chunk is far from the question.
+    distances = (results.get("distances") or [[]])[0]
+    if distances and min(distances) > RELEVANCE_CUTOFF:
+        raise NoRelevantDocsError(
+            "Nothing relevant is indexed for that question — try /sources to "
+            "see what's available, or add docs to sources.yaml and re-ingest."
         )
 
     prompt = build_prompt(question, docs, history or [], metadatas)
