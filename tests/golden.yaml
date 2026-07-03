@@ -1,0 +1,48 @@
+# Golden retrieval set: question -> the doc that should be retrieved.
+# Scored by src/eval_retrieval.py (hit-rate@k, MRR). Questions are phrased the
+# way Matt would actually ask, not copied from the docs verbatim.
+
+- question: How do I create a tensor from a Python list?
+  path: docs/pytorch/tensorqs-tutorial.md
+- question: What attributes does a tensor have, like shape and dtype?
+  path: docs/pytorch/tensorqs-tutorial.md
+- question: How do I define a neural network class with nn.Module?
+  path: docs/pytorch/buildmodel-tutorial.md
+- question: How do I get the device for training, like cuda or cpu?
+  path: docs/pytorch/buildmodel-tutorial.md
+- question: How does automatic differentiation and backward() work?
+  path: docs/pytorch/autogradqs-tutorial.md
+- question: How do I use a DataLoader to iterate over a dataset in batches?
+  path: docs/pytorch/data-tutorial.md
+- question: How do I write a custom Dataset class for my own files?
+  path: docs/pytorch/data-tutorial.md
+- question: How do I normalize or transform images before training?
+  path: docs/pytorch/transforms-tutorial.md
+- question: How do I pick a learning rate and other hyperparameters?
+  path: docs/pytorch/optimization-tutorial.md
+- question: What does an optimization training loop look like?
+  path: docs/pytorch/optimization-tutorial.md
+- question: How do I save and load model weights with a state dict?
+  path: docs/pytorch/saveloadrun-tutorial.md
+- question: Where do I start with the PyTorch beginner tutorials?
+  path: docs/pytorch/intro.md
+- question: How do I use a list as a stack or a queue in Python?
+  path: docs/python/datastructures.md
+- question: How do list comprehensions work?
+  path: docs/python/datastructures.md
+- question: How do I generate embeddings for a batch of texts with Ollama?
+  path: docs/ollama/embeddings.md
+- question: How do I stream a chat response token by token from Ollama?
+  path: docs/ollama/streaming.md
+- question: How does tool calling work in Ollama?
+  path: docs/ollama/tool-calling.md
+- question: How do I filter a Chroma query by metadata fields?
+  path: docs/chroma/metadata-filtering.md
+- question: How do I create a Chroma collection with custom metadata?
+  path: docs/chroma/manage-collections.md
+- question: How do I query a Chroma collection and get documents back?
+  path: docs/chroma/query-and-get.md
+- question: How do Qwen models do function calling?
+  path: docs/qwen/function-call.md
+- question: How do I rank documents with BM25 in Python?
+  path: docs/retrieval/rank-bm25.md

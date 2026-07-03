@@ -1,0 +1,113 @@
+"""Retrieval eval harness (repo plan #10): hit-rate@k and MRR over golden.yaml.
+
+The metrics are computed against a scripted retrieve function — real numbers
+come from running src/eval_retrieval.py on the machine that has Ollama.
+"""
+
+from pathlib import Path
+
+import eval_retrieval
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def results_with_paths(paths: list[str]) -> dict:
+    return {
+        "documents": [[f"chunk from {p}" for p in paths]],
+        "metadatas": [[{"path": p, "source": p.split("/")[1]} for p in paths]],
+        "distances": [[0.1 * (i + 1) for i in range(len(paths))]],
+    }
+
+
+def test_rank_of_expected_matches_paths_by_suffix() -> None:
+    metadatas = [
+        {"path": "docs/python/datastructures.md"},
+        {"path": "docs/pytorch/tensorqs-tutorial.md"},
+    ]
+
+    rank = eval_retrieval.rank_of_expected(
+        "docs/pytorch/tensorqs-tutorial.md", metadatas
+    )
+
+    assert rank == 2
+
+
+def test_rank_of_expected_returns_none_for_a_miss() -> None:
+    metadatas = [{"path": "docs/python/datastructures.md"}]
+
+    assert eval_retrieval.rank_of_expected("docs/pytorch/intro.md", metadatas) is None
+
+
+def test_evaluate_computes_hit_rates_and_mrr() -> None:
+    golden = [
+        {"question": "q1", "path": "docs/pytorch/a.md"},
+        {"question": "q2", "path": "docs/python/b.md"},
+    ]
+
+    def retrieve_fn(question: str, n_results: int = 4, source: str | None = None):
+        if question == "q1":  # hit at rank 1
+            return results_with_paths(["docs/pytorch/a.md", "docs/python/b.md"])
+        # hit at rank 3
+        return results_with_paths(
+            ["docs/pytorch/a.md", "docs/chroma/c.md", "docs/python/b.md"]
+        )
+
+    report = eval_retrieval.evaluate(golden, k=4, retrieve_fn=retrieve_fn)
+
+    overall = report["overall"]
+    assert overall["n"] == 2
+    assert overall["hit@1"] == 0.5
+    assert overall["hit@k"] == 1.0
+    assert abs(overall["mrr"] - (1.0 + 1.0 / 3.0) / 2.0) < 1e-9
+
+
+def test_evaluate_counts_misses_as_zero() -> None:
+    golden = [{"question": "q", "path": "docs/pytorch/a.md"}]
+
+    def retrieve_fn(question: str, n_results: int = 4, source: str | None = None):
+        return results_with_paths(["docs/python/b.md"])
+
+    overall = eval_retrieval.evaluate(golden, k=4, retrieve_fn=retrieve_fn)["overall"]
+
+    assert overall["hit@1"] == 0.0
+    assert overall["hit@k"] == 0.0
+    assert overall["mrr"] == 0.0
+
+
+def test_evaluate_breaks_results_down_per_source() -> None:
+    golden = [
+        {"question": "q1", "path": "docs/pytorch/a.md"},
+        {"question": "q2", "path": "docs/python/b.md"},
+    ]
+
+    def retrieve_fn(question: str, n_results: int = 4, source: str | None = None):
+        return results_with_paths(["docs/pytorch/a.md"])
+
+    report = eval_retrieval.evaluate(golden, k=4, retrieve_fn=retrieve_fn)
+
+    assert report["per_source"]["pytorch"]["hit@k"] == 1.0
+    assert report["per_source"]["python"]["hit@k"] == 0.0
+
+
+def test_format_report_is_readable() -> None:
+    golden = [{"question": "q1", "path": "docs/pytorch/a.md"}]
+
+    def retrieve_fn(question: str, n_results: int = 4, source: str | None = None):
+        return results_with_paths(["docs/pytorch/a.md"])
+
+    report = eval_retrieval.evaluate(golden, k=4, retrieve_fn=retrieve_fn)
+    text = eval_retrieval.format_report(report, k=4)
+
+    assert "hit@1" in text
+    assert "hit@4" in text
+    assert "mrr" in text
+    assert "pytorch" in text
+
+
+def test_golden_file_loads_and_every_path_exists() -> None:
+    golden = eval_retrieval.load_golden(REPO_ROOT / "tests" / "golden.yaml")
+
+    assert len(golden) >= 15
+    for entry in golden:
+        assert entry["question"].strip()
+        assert (REPO_ROOT / entry["path"]).is_file(), entry["path"]
