@@ -193,21 +193,66 @@ def _unique_slug(url: str, taken: set[str]) -> str:
     return slug
 
 
+def parse_refresh(argv: list[str]) -> tuple[int | None, list[str]]:
+    """Pull a '--refresh 30d' option out of the CLI arguments."""
+    if "--refresh" not in argv:
+        return None, list(argv)
+
+    index = argv.index("--refresh")
+    remaining = argv[:index] + argv[index + 2 :]
+
+    try:
+        value = argv[index + 1]
+        days = int(value.rstrip("d"))
+    except (IndexError, ValueError):
+        raise ValueError(
+            "--refresh needs an age in days, like: --refresh 30d"
+        ) from None
+
+    return days, remaining
+
+
+def doc_age_days(path: Path, today: date | None = None) -> int | None:
+    """Age of a fetched doc in days, from its frontmatter; None if unknown."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    match = re.search(r"^fetched: (\d{4}-\d{2}-\d{2})$", text, flags=re.MULTILINE)
+
+    if not match:
+        return None
+
+    fetched = date.fromisoformat(match.group(1))
+    return ((today or date.today()) - fetched).days
+
+
 def fetch_source(
     source: str,
     urls: list[str],
     docs_dir: Path = DOCS_DIR,
+    max_age_days: int | None = None,
 ) -> tuple[list[Path], list[str]]:
     """Fetch every URL for one source; a failed page is reported, not fatal.
 
     Returns the written file paths and the URLs that failed. Only network
-    failures are skipped — a bug in our own code still crashes loudly.
+    failures are skipped — a bug in our own code still crashes loudly. With
+    max_age_days set, pages whose existing doc is younger are not re-fetched.
     """
     written = []
     failed = []
     taken_slugs: set[str] = set()
 
     for url in urls:
+        slug = _unique_slug(url, taken_slugs)
+
+        if max_age_days is not None:
+            age = doc_age_days(docs_dir / source / f"{slug}.md")
+            if age is not None and age <= max_age_days:
+                print(f"  {url} is {age}d old, fresh enough — skipped")
+                continue
+
         # Prefer native markdown when the site publishes it (llms.txt
         # convention) — no conversion loss, and far fewer tokens than HTML.
         probe = probe_native_markdown(url)
@@ -232,7 +277,7 @@ def fetch_source(
         path = write_doc(
             docs_dir=docs_dir,
             source=source,
-            slug=_unique_slug(url, taken_slugs),
+            slug=slug,
             markdown=markdown,
             url=fetched_url,
             fetched=date.today().isoformat(),
@@ -246,12 +291,19 @@ def fetch_source(
 def main() -> None:
     """Fetch doc pages listed in sources.yaml into docs/<source>/.
 
-    Usage: python src/fetch_docs.py [source ...]
-    With no arguments every source in the registry is fetched.
+    Usage: python src/fetch_docs.py [--refresh 30d] [source ...]
+    With no sources every source in the registry is fetched. --refresh only
+    re-downloads pages whose saved copy is older than the given age.
     """
     sources = load_sources(SOURCES_FILE)
 
-    requested = sys.argv[1:] or list(sources)
+    try:
+        max_age_days, args = parse_refresh(sys.argv[1:])
+    except ValueError as error:
+        print(error)
+        raise SystemExit(1)
+
+    requested = args or list(sources)
     unknown = [name for name in requested if name not in sources]
     if unknown:
         print(f"Unknown sources: {', '.join(unknown)}")
@@ -262,7 +314,9 @@ def main() -> None:
     all_failed: list[str] = []
     for name in requested:
         print(f"Fetching source '{name}' ({len(sources[name])} pages)")
-        written, failed = fetch_source(name, sources[name])
+        written, failed = fetch_source(
+            name, sources[name], max_age_days=max_age_days
+        )
         total += len(written)
         all_failed.extend(failed)
 

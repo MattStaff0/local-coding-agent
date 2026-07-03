@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -379,7 +380,7 @@ def test_main_exits_nonzero_when_pages_failed(
     monkeypatch.setattr(
         fetch_docs,
         "fetch_source",
-        lambda name, urls, docs_dir=None: ([], list(urls)),
+        lambda name, urls, docs_dir=None, max_age_days=None: ([], list(urls)),
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -478,3 +479,85 @@ def test_probe_that_returns_html_is_treated_as_a_miss(
 
     assert not failed
     assert "# Real" in written[0].read_text(encoding="utf-8")
+
+
+# --- Staleness refresh (--refresh Nd) ---
+
+
+def test_parse_refresh_extracts_days_and_remaining_args() -> None:
+    assert fetch_docs.parse_refresh(["--refresh", "30d", "ollama"]) == (30, ["ollama"])
+    assert fetch_docs.parse_refresh(["pytorch"]) == (None, ["pytorch"])
+
+
+def test_parse_refresh_rejects_malformed_values() -> None:
+    with pytest.raises(ValueError, match="refresh"):
+        fetch_docs.parse_refresh(["--refresh", "soon"])
+    with pytest.raises(ValueError, match="refresh"):
+        fetch_docs.parse_refresh(["--refresh"])
+
+
+def test_doc_age_days_reads_the_fetched_date(tmp_path: Path) -> None:
+    doc = tmp_path / "page.md"
+    doc.write_text(
+        "---\nurl: https://ex.com/p\nfetched: 2026-06-01\n---\n\n# P\n",
+        encoding="utf-8",
+    )
+
+    age = fetch_docs.doc_age_days(doc, today=date(2026, 7, 1))
+
+    assert age == 30
+
+
+def test_doc_age_days_is_none_without_frontmatter(tmp_path: Path) -> None:
+    doc = tmp_path / "page.md"
+    doc.write_text("# no frontmatter\n", encoding="utf-8")
+
+    assert fetch_docs.doc_age_days(doc, today=date(2026, 7, 1)) is None
+
+
+def test_fetch_source_skips_docs_fresher_than_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fresh = tmp_path / "demo" / "fresh.md"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_text(
+        f"---\nurl: https://ex.com/fresh\nfetched: {date.today().isoformat()}\n---\n\nok\n",
+        encoding="utf-8",
+    )
+
+    def fake_fetch(url: str) -> str:
+        raise AssertionError(f"fresh page must not be fetched: {url}")
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", fake_fetch)
+
+    written, failed = fetch_source(
+        "demo", ["https://ex.com/fresh"], docs_dir=tmp_path, max_age_days=30
+    )
+
+    assert written == []
+    assert failed == []
+
+
+def test_fetch_source_refetches_docs_older_than_max_age(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = tmp_path / "demo" / "stale.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "---\nurl: https://ex.com/stale\nfetched: 2020-01-01\n---\n\nold\n",
+        encoding="utf-8",
+    )
+
+    def fake_fetch(url: str) -> str:
+        if url.endswith(".md"):
+            raise requests.RequestException("404")
+        return "<main><h1>New</h1></main>"
+
+    monkeypatch.setattr(fetch_docs, "fetch_page", fake_fetch)
+
+    written, failed = fetch_source(
+        "demo", ["https://ex.com/stale"], docs_dir=tmp_path, max_age_days=30
+    )
+
+    assert len(written) == 1
+    assert "New" in written[0].read_text(encoding="utf-8")
