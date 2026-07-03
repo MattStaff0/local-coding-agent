@@ -1,5 +1,9 @@
+import json
+import os
+import re
 import sys
 import traceback
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +20,77 @@ from rag import (
 )
 
 NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
+
+# Chat memory now survives restarts; only the recent tail is kept so the file
+# (and the prompt history it feeds) cannot grow without bound.
+HISTORY_FILE = Path("chat_history.json")
+MAX_SAVED_MESSAGES = 100
+
+# Where /export writes study notes. Point this at the Obsidian vault, e.g.
+# STUDY_NOTES_DIR="$HOME/Documents/matt-vault/study-notes".
+EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", "study-notes"))
+
+
+def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
+    """Load saved chat history; a missing or corrupt file means a fresh start."""
+    try:
+        history = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    return history if isinstance(history, list) else []
+
+
+def save_history(
+    history: list[dict[str, str]], path: Path = HISTORY_FILE
+) -> None:
+    """Persist the most recent chat messages to disk."""
+    path.write_text(
+        json.dumps(history[-MAX_SAVED_MESSAGES:], indent=2), encoding="utf-8"
+    )
+
+
+def export_note(
+    question: str,
+    answer: str,
+    metadatas: list[dict[str, Any]],
+    notes_dir: Path = EXPORT_DIR,
+) -> Path:
+    """Write one answered question as a markdown study note.
+
+    Every good answer can become a vault note — that's the learning flywheel.
+    """
+    notes_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = re.sub(r"[^a-z0-9]+", "-", question.lower()).strip("-")[:60] or "note"
+    stem = f"{date.today().isoformat()}-{slug}"
+
+    path = notes_dir / f"{stem}.md"
+    counter = 2
+    while path.exists():
+        path = notes_dir / f"{stem}-{counter}.md"
+        counter += 1
+
+    lines = [
+        "---",
+        f"date: {date.today().isoformat()}",
+        "kind: study-note",
+        "---",
+        "",
+        f"# {question}",
+        "",
+        answer.strip(),
+        "",
+    ]
+
+    if metadatas:
+        lines.append("## Sources")
+        lines.extend(f"- {line}" for line in source_legend(metadatas))
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    return path
 
 
 def describe_error(error: Exception) -> str:
@@ -96,16 +171,19 @@ def apply_source_command(
 
 
 def chat_loop() -> None:
-    """Run an interactive terminal chat with temporary session memory."""
-    # This list is the chat memory for the current terminal session only.
-    # It disappears when you close the program.
-    history: list[dict[str, str]] = []
+    """Run an interactive terminal chat with persistent memory."""
+    history = load_history()
     active_source: str | None = None
+    last_export: tuple[str, str, list[dict[str, Any]]] | None = None
 
     print("Local RAG chat")
     print("Type your question, or type /exit to quit.")
     print("Scope answers with /sources, /source <name>, /source all.")
     print("Search this codebase live with /agent <question>.")
+    print("Save the last answer as a study note with /export.")
+
+    if history:
+        print(f"(restored {len(history)} messages from {HISTORY_FILE})")
 
     while True:
         question = input("\nYou: ").strip()
@@ -117,6 +195,15 @@ def chat_loop() -> None:
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
             print("Goodbye.")
             return
+
+        if question == "/export":
+            if last_export is None:
+                print("Nothing to export yet — ask a question first.")
+                continue
+
+            path = export_note(*last_export)
+            print(f"Saved study note: {path}")
+            continue
 
         agent_question = parse_agent_command(question)
         if agent_question is not None:
@@ -154,6 +241,8 @@ def chat_loop() -> None:
         # enough context to understand words like "that" or "it".
         history.append({"role": "user", "content": question})
         history.append({"role": "assistant", "content": answer})
+        save_history(history)
+        last_export = (question, answer, metadatas)
 
 
 def main() -> None:
