@@ -4,4 +4,4 @@ beautifulsoup4
 markdownify
 ollama
 pyyaml
-pytest
+pytestrank_bm25

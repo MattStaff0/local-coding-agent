@@ -6,6 +6,7 @@ from typing import Any, Callable
 import chromadb
 import chromadb.errors
 import ollama
+from rank_bm25 import BM25Okapi
 
 
 class EmptyIndexError(RuntimeError):
@@ -31,6 +32,11 @@ MAX_HISTORY_TURNS = 6
 # beyond which the best match is considered "nothing relevant". Requires the
 # collection to be built in cosine space — re-run ingest after changing spaces.
 RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
+
+# Hybrid retrieval: how many candidates each ranking contributes before
+# fusion, and the standard RRF dampening constant.
+HYBRID_CANDIDATES = 20
+RRF_K = 60
 
 
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
@@ -337,26 +343,97 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
     return len(documents)
 
 
+def _tokenize(text: str) -> list[str]:
+    """Split text into lowercase word tokens; `nn.Module` becomes nn, module."""
+    return re.findall(r"[a-z0-9_]+", text.lower())
+
+
+def _rrf_scores(rankings: list[list[str]], k: int = RRF_K) -> dict[str, float]:
+    """Fuse rankings with Reciprocal Rank Fusion: score = sum of 1/(k+rank).
+
+    Rank-based fusion sidesteps the scale mismatch between BM25 scores and
+    cosine distances entirely.
+    """
+    scores: dict[str, float] = {}
+
+    for ranking in rankings:
+        for rank, item_id in enumerate(ranking, start=1):
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+
+    return scores
+
+
+def _bm25_ranking(question: str, ids: list[str], documents: list[str]) -> list[str]:
+    """Rank chunk ids by BM25 keyword relevance to the question."""
+    bm25 = BM25Okapi([_tokenize(document) for document in documents])
+    scores = bm25.get_scores(_tokenize(question))
+
+    ranked = sorted(zip(ids, scores), key=lambda pair: pair[1], reverse=True)
+
+    # A zero score means no query term appears at all — not a keyword match.
+    return [item_id for item_id, score in ranked if score > 0][:HYBRID_CANDIDATES]
+
+
 def retrieve(
     question: str,
     n_results: int = 4,
     source: str | None = None,
+    mode: str = "hybrid",
 ) -> dict[str, Any]:
     """Find the most relevant indexed doc chunks for a user question.
 
     Pass a source name (a top-level docs/ folder) to search only that source.
+    The default hybrid mode fuses vector and BM25 keyword rankings with RRF —
+    embeddings catch paraphrases, BM25 catches exact identifiers; pass
+    mode="vector" for pure semantic search.
     """
     client = get_client()
     collection = client.get_collection(name=COLLECTION_NAME)
+    where = {"source": source} if source else None
 
     # The question has to be embedded with the same model used for the docs.
     question_embedding = embed(question)
 
-    return collection.query(
+    vector_results = collection.query(
         query_embeddings=[question_embedding],
-        n_results=n_results,
-        where={"source": source} if source else None,
+        n_results=HYBRID_CANDIDATES if mode == "hybrid" else n_results,
+        where=where,
     )
+
+    if mode != "hybrid":
+        return vector_results
+
+    corpus = collection.get(where=where, include=["documents", "metadatas"])
+
+    if not corpus["ids"]:
+        return vector_results
+
+    vector_ids = vector_results["ids"][0]
+    bm25_ids = _bm25_ranking(question, corpus["ids"], corpus["documents"])
+
+    fused = _rrf_scores([vector_ids, bm25_ids])
+    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+
+    by_id = {
+        item_id: (document, metadata)
+        for item_id, document, metadata in zip(
+            corpus["ids"], corpus["documents"], corpus["metadatas"]
+        )
+    }
+    # Keep the vector distance where the chunk appeared in the vector
+    # candidates. A BM25-only hit has no measured distance, but a keyword
+    # match IS evidence of relevance — report it exactly at the cutoff so the
+    # "nothing relevant" refusal never triggers on a genuine keyword hit.
+    distance_by_id = dict(zip(vector_ids, vector_results["distances"][0]))
+
+    return {
+        "ids": [top_ids],
+        "documents": [[by_id[item_id][0] for item_id in top_ids]],
+        "metadatas": [[by_id[item_id][1] for item_id in top_ids]],
+        "distances": [
+            [distance_by_id.get(item_id, RELEVANCE_CUTOFF) for item_id in top_ids]
+        ],
+    }
 
 
 def list_sources() -> list[str]:
