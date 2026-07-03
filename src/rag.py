@@ -38,6 +38,11 @@ MAX_HISTORY_TURNS = 6
 # automatically.
 RELEVANCE_CUTOFF = float(os.getenv("RAG_RELEVANCE_CUTOFF", "0.65"))
 
+# Character budget for the documentation context injected into the prompt.
+# Small local models lose the question when the context crowds it out; RRF
+# order is quality order, so trimming from the tail costs the least.
+PROMPT_CHAR_BUDGET = int(os.getenv("RAG_PROMPT_BUDGET", "12000"))
+
 # Hybrid retrieval: how many candidates each ranking contributes before
 # fusion, and the standard RRF dampening constant.
 HYBRID_CANDIDATES = 20
@@ -751,6 +756,31 @@ def format_context(
     return "\n\n---\n\n".join(blocks)
 
 
+def budget_chunks(
+    docs: list[str],
+    metadatas: list[dict[str, Any]],
+    budget: int | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Keep top-ranked chunks whole until the character budget runs out.
+
+    The first chunk always survives: an oversized best match beats an empty
+    context.
+    """
+    budget = PROMPT_CHAR_BUDGET if budget is None else budget
+    kept_docs: list[str] = []
+    kept_metadatas: list[dict[str, Any]] = []
+    used = 0
+
+    for doc, metadata in zip(docs, metadatas):
+        if kept_docs and used + len(doc) > budget:
+            break
+        kept_docs.append(doc)
+        kept_metadatas.append(metadata)
+        used += len(doc)
+
+    return kept_docs, kept_metadatas
+
+
 def build_prompt(
     question: str,
     context_chunks: list[str],
@@ -878,7 +908,14 @@ def answer_question(
             "see what's available, or add docs to sources.yaml and re-ingest."
         )
 
-    prompt = build_prompt(question, docs, history or [], metadatas)
+    kept_docs, kept_metadatas = budget_chunks(docs, metadatas)
+    if len(kept_docs) < len(docs):
+        print(
+            f"(context trimmed to {len(kept_docs)} of {len(docs)} chunks "
+            "to fit the prompt budget)"
+        )
+
+    prompt = build_prompt(question, kept_docs, history or [], kept_metadatas)
     answer = ask_model(prompt, on_token=on_token)
 
-    return answer, metadatas
+    return answer, kept_metadatas
