@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -287,12 +288,52 @@ def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) ->
     return f"{safe_path}-{chunk_index}"
 
 
-def index_docs(docs_dir: Path = DOCS_DIR) -> int:
-    """Read markdown docs, embed every chunk, and store them in Chroma.
+def _file_hash(text: str) -> str:
+    """Content fingerprint used to detect changed docs between ingests."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    All reading, chunking, and embedding happens BEFORE the old collection is
-    touched, so a failed run (bad file, Ollama down) never leaves an empty
-    index behind.
+
+def _prepare_file(
+    doc_file: Path, text: str, docs_dir: Path
+) -> tuple[list[str], list[str], list[list[float]], list[dict[str, Any]]]:
+    """Chunk and embed one doc file; returns (ids, documents, embeddings, metadatas)."""
+    chunks = chunk_markdown(text)
+    digest = _file_hash(text)
+
+    print(f"Processing {doc_file.name}: {len(chunks)} chunks")
+
+    # One embedding call per file instead of per chunk keeps ingest fast
+    # once the corpus is hundreds of pages.
+    embeddings = embed_batch([chunk["text"] for chunk in chunks])
+
+    ids = []
+    documents = []
+    metadatas = []
+
+    for i, chunk in enumerate(chunks):
+        ids.append(chunk_id_for(doc_file, i, docs_dir))
+        documents.append(chunk["text"])
+        metadatas.append(
+            {
+                "source": source_for(doc_file, docs_dir),
+                "path": str(doc_file),
+                "heading": chunk["heading"],
+                "chunk_index": i,
+                "file_hash": digest,
+            }
+        )
+
+    return ids, documents, embeddings, metadatas
+
+
+def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
+    """Embed markdown docs into Chroma; unchanged files are skipped.
+
+    Incremental by default: each file's content hash is stored in its chunk
+    metadata, so a re-ingest only embeds files that changed, adds new ones,
+    and drops records for files deleted from disk. With full=True everything
+    is re-embedded BEFORE the old collection is touched, so a failed rebuild
+    (bad file, Ollama down) never leaves an empty index behind.
     """
     # rglob picks up the per-source folders fetch_docs.py creates,
     # like docs/pytorch/ and docs/python/.
@@ -302,45 +343,71 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
         print(f"No docs found in {docs_dir}/ — keeping the existing index.")
         return 0
 
-    ids = []
-    documents = []
-    embeddings = []
-    metadatas = []
+    if full:
+        ids: list[str] = []
+        documents: list[str] = []
+        embeddings: list[list[float]] = []
+        metadatas: list[dict[str, Any]] = []
+
+        for doc_file in doc_files:
+            text = doc_file.read_text(encoding="utf-8")
+            file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
+                doc_file, text, docs_dir
+            )
+            ids.extend(file_ids)
+            documents.extend(file_docs)
+            embeddings.extend(file_embeddings)
+            metadatas.extend(file_metadatas)
+
+        # Everything embedded successfully — only now swap the index.
+        collection = reset_collection(get_client())
+        collection.add(
+            ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas
+        )
+
+        return len(documents)
+
+    collection = get_client().get_or_create_collection(
+        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
+
+    records = collection.get(include=["metadatas"])
+    stored_hashes: dict[str, str] = {}
+    for metadata in records["metadatas"]:
+        stored_hashes[metadata["path"]] = metadata.get("file_hash", "")
+
+    # Files that vanished from disk take their index records with them.
+    on_disk = {str(doc_file) for doc_file in doc_files}
+    for path in stored_hashes:
+        if path not in on_disk:
+            collection.delete(where={"path": path})
+
+    added = 0
 
     for doc_file in doc_files:
         text = doc_file.read_text(encoding="utf-8")
-        chunks = chunk_markdown(text)
 
-        print(f"Processing {doc_file.name}: {len(chunks)} chunks")
+        if stored_hashes.get(str(doc_file)) == _file_hash(text):
+            continue
 
-        # One embedding call per file instead of per chunk keeps ingest fast
-        # once the corpus is hundreds of pages.
-        embeddings.extend(embed_batch([chunk["text"] for chunk in chunks]))
+        file_ids, file_docs, file_embeddings, file_metadatas = _prepare_file(
+            doc_file, text, docs_dir
+        )
 
-        for i, chunk in enumerate(chunks):
-            ids.append(chunk_id_for(doc_file, i, docs_dir))
-            documents.append(chunk["text"])
-            metadatas.append(
-                {
-                    "source": source_for(doc_file, docs_dir),
-                    "path": str(doc_file),
-                    "heading": chunk["heading"],
-                    "chunk_index": i,
-                }
+        # Replace, not append: the old version may have had more chunks.
+        collection.delete(where={"path": str(doc_file)})
+
+        if file_ids:
+            collection.add(
+                ids=file_ids,
+                documents=file_docs,
+                embeddings=file_embeddings,
+                metadatas=file_metadatas,
             )
 
-    # Everything embedded successfully — only now is it safe to swap the index.
-    client = get_client()
-    collection = reset_collection(client)
+        added += len(file_ids)
 
-    collection.add(
-        ids=ids,
-        documents=documents,
-        embeddings=embeddings,
-        metadatas=metadatas,
-    )
-
-    return len(documents)
+    return added
 
 
 def _tokenize(text: str) -> list[str]:

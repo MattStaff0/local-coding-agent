@@ -56,7 +56,7 @@ def _indexed_count() -> int:
     return collection.count()
 
 
-def test_failed_ingest_preserves_the_existing_index(
+def test_failed_full_rebuild_preserves_the_existing_index(
     fake_embed, temp_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     docs = tmp_path / "docs"
@@ -68,9 +68,32 @@ def test_failed_ingest_preserves_the_existing_index(
     monkeypatch.setattr(rag, "embed_batch", exploding_embed_batch)
 
     with pytest.raises(ConnectionError):
-        index_docs(docs_dir=docs)
+        index_docs(docs_dir=docs, full=True)
 
     # The old index must survive a failed rebuild.
+    assert _indexed_count() == 1
+
+
+def test_failed_incremental_ingest_keeps_the_old_records(
+    fake_embed, temp_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs = tmp_path / "docs"
+    assert _seed_collection(docs) == 1
+
+    # The file changes, but embedding it fails — the previous version's
+    # records must still be there (embed happens before the delete).
+    (docs / "python" / "lists.md").write_text(
+        "# Lists\n\nCHANGED content.", encoding="utf-8"
+    )
+
+    def exploding_embed_batch(texts: list[str]) -> list[list[float]]:
+        raise ConnectionError("ollama is down")
+
+    monkeypatch.setattr(rag, "embed_batch", exploding_embed_batch)
+
+    with pytest.raises(ConnectionError):
+        index_docs(docs_dir=docs)
+
     assert _indexed_count() == 1
 
 
