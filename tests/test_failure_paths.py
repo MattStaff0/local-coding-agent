@@ -9,7 +9,9 @@ from rag import EmptyIndexError, chunk_text, index_docs, reset_collection
 
 @pytest.fixture()
 def fake_embed(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(rag, "embed", lambda text: [float(len(text) % 7), 1.0])
+    vector = lambda text: [float(len(text) % 7), 1.0]
+    monkeypatch.setattr(rag, "embed", vector)
+    monkeypatch.setattr(rag, "embed_batch", lambda texts: [vector(t) for t in texts])
 
 
 @pytest.fixture()
@@ -60,10 +62,10 @@ def test_failed_ingest_preserves_the_existing_index(
     docs = tmp_path / "docs"
     assert _seed_collection(docs) == 1
 
-    def exploding_embed(text: str) -> list[float]:
+    def exploding_embed_batch(texts: list[str]) -> list[list[float]]:
         raise ConnectionError("ollama is down")
 
-    monkeypatch.setattr(rag, "embed", exploding_embed)
+    monkeypatch.setattr(rag, "embed_batch", exploding_embed_batch)
 
     with pytest.raises(ConnectionError):
         index_docs(docs_dir=docs)

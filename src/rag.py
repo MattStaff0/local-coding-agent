@@ -227,13 +227,18 @@ def chunk_markdown(text: str, chunk_size: int = 1500) -> list[dict[str, str]]:
     return chunks
 
 
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Embed many texts in one Ollama call — much faster than one call each."""
+    response = ollama.embed(
+        model=EMBED_MODEL,
+        input=texts,
+    )
+    return [list(vector) for vector in response["embeddings"]]
+
+
 def embed(text: str) -> list[float]:
     """Ask Ollama's embedding model to turn text into a vector of numbers."""
-    response = ollama.embeddings(
-        model=EMBED_MODEL,
-        prompt=text,
-    )
-    return response["embedding"]
+    return embed_batch([text])[0]
 
 
 def get_client() -> chromadb.PersistentClient:
@@ -302,12 +307,13 @@ def index_docs(docs_dir: Path = DOCS_DIR) -> int:
 
         print(f"Processing {doc_file.name}: {len(chunks)} chunks")
 
+        # One embedding call per file instead of per chunk keeps ingest fast
+        # once the corpus is hundreds of pages.
+        embeddings.extend(embed_batch([chunk["text"] for chunk in chunks]))
+
         for i, chunk in enumerate(chunks):
-            # Each chunk needs its own id, breadcrumb-prefixed text, embedding,
-            # and metadata.
             ids.append(chunk_id_for(doc_file, i, docs_dir))
             documents.append(chunk["text"])
-            embeddings.append(embed(chunk["text"]))
             metadatas.append(
                 {
                     "source": source_for(doc_file, docs_dir),
