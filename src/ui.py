@@ -79,3 +79,32 @@ def make_renderer(force_plain: bool = False):
     if force_plain or not sys.stdout.isatty():
         return PlainRenderer()
     return RichRenderer()
+
+
+COMMANDS = ["/agent", "/exit", "/export", "/help", "/source", "/sources"]
+
+
+def completion_words(sources: list[str]) -> list[str]:
+    return COMMANDS + [f"/source {source}" for source in sources] + ["/source all"]
+
+
+def make_input(sources_fn):
+    """Line reader: prompt_toolkit on a real terminal, builtin input elsewhere.
+
+    Building the PromptSession lazily keeps `import ui` safe in tests and
+    pipes, where prompt_toolkit would fail probing the terminal.
+    """
+    if not sys.stdin.isatty():
+        return lambda prompt_text: input(prompt_text)
+
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.history import FileHistory
+
+    import paths
+
+    session = PromptSession(
+        history=FileHistory(str(paths.ASK_HISTORY_FILE)),
+        completer=WordCompleter(completion_words(sources_fn()), sentence=True),
+    )
+    return lambda prompt_text: session.prompt(prompt_text)

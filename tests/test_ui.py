@@ -40,3 +40,17 @@ def test_rich_renderer_accumulates_and_resets_buffer():
     assert renderer.buffer == "# hi\ncode"
     renderer.finish_answer()
     assert renderer.buffer == ""  # reset for the next turn
+
+
+def test_completion_words_include_commands_and_sources():
+    words = ui.completion_words(["python", "pytorch"])
+    assert "/help" in words
+    assert "/source python" in words
+    assert "/source all" in words
+
+
+def test_make_input_falls_back_to_builtin_off_tty(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    reader = ui.make_input(lambda: [])
+    monkeypatch.setattr("builtins.input", lambda prompt: "hello")
+    assert reader("You: ") == "hello"
