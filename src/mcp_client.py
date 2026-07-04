@@ -60,6 +60,8 @@ class MCPManager:
         self._stack = AsyncExitStack()
         # namespaced tool name -> (session, original tool name)
         self._routes: dict[str, tuple[object, str]] = {}
+        self._confirm_tools: set[str] = set()
+        self.schemas: list[dict] = []
 
     def _run(self, coroutine, timeout: int = 60):
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result(timeout)
@@ -98,6 +100,7 @@ class MCPManager:
                 continue
 
             allowed = set(server_config.get("tools", []))
+            gated = set(server_config.get("confirm", []))
 
             for tool in tools:
                 name = namespaced(server, tool.name)
@@ -106,12 +109,18 @@ class MCPManager:
                     continue
 
                 self._routes[name] = (session, tool.name)
+                if name in gated:
+                    self._confirm_tools.add(name)
                 schemas.append(to_ollama_schema(server, tool))
 
+        self.schemas = schemas
         return schemas
 
     def owns(self, tool_name: str) -> bool:
         return tool_name in self._routes
+
+    def needs_confirm(self, tool_name: str) -> bool:
+        return tool_name in self._confirm_tools
 
     def call(self, tool_name: str, arguments: dict) -> str:
         """Call one MCP tool; every failure is a string for the model."""

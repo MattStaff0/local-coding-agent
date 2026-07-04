@@ -253,6 +253,7 @@ def run_agent(
     max_iterations: int = MAX_ITERATIONS,
     session: AgentSession | None = None,
     confirm: Callable[[str, str], bool] | None = None,
+    mcp=None,
 ) -> tuple[str, list[str]]:
     """Answer a codebase question by letting the model drive search tools.
 
@@ -270,11 +271,20 @@ def run_agent(
     trace: list[str] = []
     last_signature: str | None = None
 
+    tools = TOOL_SCHEMAS + (mcp.schemas if mcp is not None else [])
+    if len(tools) > 8:
+        # Small models degrade sharply when picking between many tools
+        # (2026-07-03 review); the fix is trimming mcp.json allowlists.
+        print(
+            f"(warning: {len(tools)} tools loaded — small models degrade "
+            "past 8; trim mcp.json allowlists)"
+        )
+
     for _ in range(max_iterations):
         response = ollama.chat(
             model=AGENT_MODEL,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}, *session.messages],
-            tools=TOOL_SCHEMAS,
+            tools=tools,
         )
         message = response["message"]
         tool_calls = message.get("tool_calls") or []
@@ -299,6 +309,13 @@ def run_agent(
                     "You already ran exactly this call. Use the previous "
                     "result, or answer with what you have."
                 )
+            elif mcp is not None and mcp.owns(name):
+                if mcp.needs_confirm(name) and (
+                    confirm is None or not confirm(f"mcp: {name}", str(arguments))
+                ):
+                    result = "User declined the change."
+                else:
+                    result = mcp.call(name, arguments)
             else:
                 result = dispatch_tool(name, arguments, session.root, confirm)
 

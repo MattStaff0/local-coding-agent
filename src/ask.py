@@ -10,6 +10,7 @@ from typing import Any
 import chromadb.errors
 import httpx
 
+import mcp_client
 import paths
 import ui
 from agent import AgentSession, format_agent_reply, parse_agent_command, run_agent
@@ -145,6 +146,27 @@ def safe_list_sources() -> list[str]:
         return []
 
 
+def start_mcp():
+    """Start MCP servers from mcp.json, once per chat process.
+
+    Returns None when nothing is configured or startup fails — the agent
+    then runs with native tools only, which is a degradation, not an error.
+    """
+    config = mcp_client.load_config(paths.PROJECT_ROOT / "mcp.json")
+
+    if not config.get("servers"):
+        return None
+
+    try:
+        manager = mcp_client.MCPManager(config)
+        manager.start()
+    except Exception as error:
+        print(f"(mcp unavailable: {error})")
+        return None
+
+    return manager
+
+
 HELP_TEXT = """\
 Commands:
   /help             show this help
@@ -212,6 +234,8 @@ def chat_loop(renderer=None, read_input=None) -> None:
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
     agent_session: AgentSession | None = None
+    mcp_manager = None
+    mcp_started = False
 
     renderer.show_message("Local RAG chat")
     renderer.show_message("Type your question, /help for commands, /exit to quit.")
@@ -285,6 +309,12 @@ def chat_loop(renderer=None, read_input=None) -> None:
             if agent_session is None:
                 agent_session = AgentSession(root=Path.cwd())
 
+            if not mcp_started:
+                # One manager per chat process, started lazily so plain RAG
+                # chats never pay the server-spawn cost.
+                mcp_manager = start_mcp()
+                mcp_started = True
+
             def confirm(description: str, preview: str) -> bool:
                 renderer.show_message(f"\n{description}")
                 if preview != description:
@@ -293,7 +323,10 @@ def chat_loop(renderer=None, read_input=None) -> None:
 
             try:
                 answer, trace = run_agent(
-                    argument, session=agent_session, confirm=confirm
+                    argument,
+                    session=agent_session,
+                    confirm=confirm,
+                    mcp=mcp_manager,
                 )
             except Exception as error:
                 renderer.show_error(f"\n{describe_error(error)}")
