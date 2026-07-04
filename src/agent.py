@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -110,34 +111,52 @@ def dispatch_tool(name: str, arguments: dict, root: Path) -> str:
     return f"Unknown tool '{name}'. Available: list_files, grep, read_file."
 
 
+@dataclass
+class AgentSession:
+    """One /agent conversation: where it looks (root) and what was said."""
+
+    root: Path
+    messages: list[Any] = field(default_factory=list)
+
+
 def run_agent(
     question: str,
-    root: Path,
+    root: Path | None = None,
     max_iterations: int = MAX_ITERATIONS,
+    session: AgentSession | None = None,
 ) -> tuple[str, list[str]]:
     """Answer a codebase question by letting the model drive search tools.
 
     Returns (answer, trace) where trace lists every tool call made, so the
-    user can see how the agent found its answer.
+    user can see how the agent found its answer. A session carries the
+    conversation across calls; the system prompt is prepended fresh every
+    call (never stored) so prompt upgrades apply to old sessions.
     """
-    messages: list[Any] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question},
-    ]
+    if session is None:
+        if root is None:
+            raise ValueError("root is required without a session")
+        session = AgentSession(root=root)
+
+    session.messages.append({"role": "user", "content": question})
     trace: list[str] = []
     last_signature: str | None = None
 
     for _ in range(max_iterations):
         response = ollama.chat(
-            model=AGENT_MODEL, messages=messages, tools=TOOL_SCHEMAS
+            model=AGENT_MODEL,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *session.messages],
+            tools=TOOL_SCHEMAS,
         )
         message = response["message"]
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
+            session.messages.append(
+                {"role": "assistant", "content": message["content"]}
+            )
             return message["content"], trace
 
-        messages.append(message)
+        session.messages.append(message)
 
         for call in tool_calls:
             name = call["function"]["name"]
@@ -152,11 +171,13 @@ def run_agent(
                     "result, or answer with what you have."
                 )
             else:
-                result = dispatch_tool(name, arguments, root)
+                result = dispatch_tool(name, arguments, session.root)
 
             last_signature = signature
             trace.append(f"{name}({arguments})")
-            messages.append({"role": "tool", "tool_name": name, "content": result})
+            session.messages.append(
+                {"role": "tool", "tool_name": name, "content": result}
+            )
 
     return (
         "Stopped after reaching the tool-call limit without a final answer. "

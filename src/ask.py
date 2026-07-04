@@ -12,7 +12,7 @@ import httpx
 
 import paths
 import ui
-from agent import format_agent_reply, parse_agent_command, run_agent
+from agent import AgentSession, format_agent_reply, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
     NoRelevantDocsError,
@@ -211,6 +211,7 @@ def chat_loop(renderer=None, read_input=None) -> None:
     history = load_history(HISTORY_FILE)
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
+    agent_session: AgentSession | None = None
 
     renderer.show_message("Local RAG chat")
     renderer.show_message("Type your question, /help for commands, /exit to quit.")
@@ -251,8 +252,11 @@ def chat_loop(renderer=None, read_input=None) -> None:
 
         agent_question = parse_agent_command(question)
         if agent_question is not None:
+            if agent_session is None:
+                agent_session = AgentSession(root=Path.cwd())
+
             try:
-                answer, trace = run_agent(agent_question, root=Path.cwd())
+                answer, trace = run_agent(agent_question, session=agent_session)
             except Exception as error:
                 renderer.show_error(f"\n{describe_error(error)}")
                 continue
