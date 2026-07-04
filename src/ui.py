@@ -81,7 +81,7 @@ def make_renderer(force_plain: bool = False):
     return RichRenderer()
 
 
-COMMANDS = ["/agent", "/exit", "/export", "/help", "/source", "/sources"]
+COMMANDS = ["/agent", "/code", "/exit", "/export", "/help", "/source", "/sources"]
 
 
 def completion_words(sources: list[str]) -> list[str]:

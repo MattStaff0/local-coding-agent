@@ -17,6 +17,7 @@ from agent import AgentSession, format_agent_reply, parse_agent_command, run_age
 from rag import (
     EmptyIndexError,
     NoRelevantDocsError,
+    answer_code_question,
     answer_question,
     list_sources,
     source_legend,
@@ -172,6 +173,7 @@ Commands:
   /help             show this help
   /sources          list indexed doc sources
   /source <name>    answer only from one source (/source all to reset)
+  /code <question>  answer from the indexed code (ingest_code.py first)
   /agent <question> search this codebase live with tools
   /export           save the last answer as a study note
   /exit             quit"""
@@ -272,6 +274,38 @@ def chat_loop(renderer=None, read_input=None) -> None:
                 continue
 
             renderer.show_message(f"Saved study note: {path}")
+            continue
+
+        if question == "/code" or question.startswith("/code "):
+            code_question = question.removeprefix("/code").strip()
+
+            if not code_question:
+                renderer.show_message(
+                    "Usage: /code <question> — answers from the code index "
+                    "(build it with 'python src/ingest_code.py <repo-path>')."
+                )
+                continue
+
+            try:
+                with renderer.status("thinking…"):
+                    answer, metadatas = answer_code_question(
+                        code_question, history, on_token=renderer.on_token
+                    )
+            except Exception as error:
+                renderer.show_error(describe_error(error))
+                continue
+
+            renderer.finish_answer()
+            renderer.show_sources(source_legend(metadatas))
+
+            history.append({"role": "user", "content": code_question})
+            history.append({"role": "assistant", "content": answer})
+            last_export = (code_question, answer, metadatas)
+
+            try:
+                save_history(history, HISTORY_FILE)
+            except OSError as error:
+                renderer.show_message(f"(could not save chat history: {error})")
             continue
 
         agent_command = parse_agent_command(question)

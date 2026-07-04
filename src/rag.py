@@ -855,9 +855,16 @@ def format_history(history: list[dict[str, str]]) -> str:
 
 
 def chunk_label(number: int, metadata: dict[str, Any]) -> str:
-    """Label one retrieved chunk, like '[1] docs/pytorch/tensors.md § Tensors'."""
+    """Label one retrieved chunk, like '[1] docs/pytorch/tensors.md § Tensors'.
+
+    Code chunks carry a start_line, shown as path:line so a citation points
+    at a jumpable location.
+    """
     path = metadata.get("path", metadata.get("source", "unknown"))
     heading = metadata.get("heading", "")
+
+    if "start_line" in metadata:
+        path = f"{path}:{metadata['start_line']}"
 
     label = f"[{number}] {path}"
     if heading:
@@ -911,20 +918,7 @@ def budget_chunks(
     return kept_docs, kept_metadatas
 
 
-def build_prompt(
-    question: str,
-    context_chunks: list[str],
-    history: list[dict[str, str]] | None = None,
-    metadatas: list[dict[str, Any]] | None = None,
-) -> str:
-    """Build the full prompt sent to the chat model."""
-    context = format_context(context_chunks, metadatas)
-    history_text = format_history(history or [])
-
-    # This is where RAG happens: retrieved docs are inserted into the prompt.
-    # The rules force doc-grounded answers: a small local model should teach
-    # from the retrieved documentation, never from its own training data.
-    return f"""
+DOCS_PROMPT_RULES = """\
 You are a local coding tutor. Answer the user's question using ONLY the numbered documentation context below.
 
 Rules:
@@ -933,7 +927,31 @@ Rules:
 - If the context does not fully answer the question, say exactly what is missing or not covered, and do not guess.
 - Be clear and practical.
 - Include code examples when the context contains them.
-- Use the conversation history only to understand follow-up questions.
+- Use the conversation history only to understand follow-up questions."""
+
+CODE_PROMPT_RULES = """\
+You are a local coding tutor. Answer using ONLY the numbered code context.
+Cite like [1] and include the path and start line, e.g. (src/rag.py:478).
+If the context does not contain the answer, say what is missing. Never
+invent code that is not in the context."""
+
+
+def build_prompt(
+    question: str,
+    context_chunks: list[str],
+    history: list[dict[str, str]] | None = None,
+    metadatas: list[dict[str, Any]] | None = None,
+    rules: str = DOCS_PROMPT_RULES,
+) -> str:
+    """Build the full prompt sent to the chat model."""
+    context = format_context(context_chunks, metadatas)
+    history_text = format_history(history or [])
+
+    # This is where RAG happens: retrieved docs are inserted into the prompt.
+    # The rules force grounded answers: a small local model should teach
+    # from the retrieved context, never from its own training data.
+    return f"""
+{rules}
 
 Conversation history:
 {history_text}
@@ -1076,6 +1094,55 @@ def answer_question(
     if problems:
         # Warn-only by design: a wrong warning costs a glance, an automatic
         # rerun costs a full 12B generation.
+        print(f"\n(grounding warning: {'; '.join(problems)})")
+
+    return answer, kept_metadatas
+
+
+def answer_code_question(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    repo: str | None = None,
+    on_token: Callable[[str], None] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """answer_question's flow pointed at the code index instead of the docs."""
+    search_query = rewrite_query(question, history) if history else question
+    results = retrieve(
+        search_query,
+        source=repo,
+        collection_name=CODE_COLLECTION_NAME,
+        manifest_path=CODE_MANIFEST_PATH,
+    )
+
+    docs = results["documents"][0]
+    metadatas = results["metadatas"][0]
+
+    if not docs:
+        raise EmptyIndexError(
+            "Retrieval returned no code chunks — index a repo first with "
+            "'python src/ingest_code.py <repo-path>'."
+        )
+
+    if would_refuse(results):
+        raise NoRelevantDocsError(
+            "Nothing relevant is indexed for that question in the code "
+            "index — re-run 'python src/ingest_code.py' after code changes."
+        )
+
+    kept_docs, kept_metadatas = budget_chunks(docs, metadatas)
+    if len(kept_docs) < len(docs):
+        print(
+            f"(context trimmed to {len(kept_docs)} of {len(docs)} chunks "
+            "to fit the prompt budget)"
+        )
+
+    prompt = build_prompt(
+        question, kept_docs, history or [], kept_metadatas, rules=CODE_PROMPT_RULES
+    )
+    answer = ask_model(prompt, on_token=on_token)
+
+    problems = citation_problems(answer, len(kept_docs))
+    if problems:
         print(f"\n(grounding warning: {'; '.join(problems)})")
 
     return answer, kept_metadatas
