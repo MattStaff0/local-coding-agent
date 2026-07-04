@@ -8,6 +8,7 @@ data/
 chat_history.json
 chat_history.json.bak
 manifest.jsonl
+code-manifest.jsonl
 study-notes/
 
 *.egg-info/

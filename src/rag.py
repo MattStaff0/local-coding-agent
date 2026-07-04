@@ -456,6 +456,93 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
     return added
 
 
+def index_code(repo_dir: Path, repo_name: str | None = None, full: bool = False) -> int:
+    """Embed one repo's Python files into the local_code collection.
+
+    Incremental exactly like index_docs: per-file content hashes skip
+    unchanged files, deleted files drop their records. Deletions are scoped
+    to this repo's source name so multiple indexed repos coexist.
+    """
+    # Imported lazily: code_chunker imports chunk_text from this module.
+    from agent_tools import SKIP_DIRS
+    from code_chunker import chunk_python
+
+    repo_dir = Path(repo_dir)
+    source = repo_name or repo_dir.name
+
+    py_files = sorted(
+        path
+        for path in repo_dir.rglob("*.py")
+        if not any(part in SKIP_DIRS for part in path.relative_to(repo_dir).parts)
+        and not path.is_symlink()
+    )
+
+    collection = get_client().get_or_create_collection(
+        name=CODE_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
+
+    records = collection.get(where={"source": source}, include=["metadatas"])
+    stored_hashes = {
+        metadata["relative_path"]: metadata.get("file_hash", "")
+        for metadata in records["metadatas"]
+    }
+
+    def delete_file_records(relative_path: str) -> None:
+        collection.delete(
+            where={"$and": [{"source": source}, {"relative_path": relative_path}]}
+        )
+
+    on_disk = {path.relative_to(repo_dir).as_posix() for path in py_files}
+    for relative_path in stored_hashes:
+        if relative_path not in on_disk:
+            print(f"Removing indexed chunks for deleted {relative_path}")
+            delete_file_records(relative_path)
+
+    added = 0
+
+    for py_file in py_files:
+        text = py_file.read_text(encoding="utf-8", errors="replace")
+        relative_path = py_file.relative_to(repo_dir).as_posix()
+        digest = _file_hash(text)
+
+        if not full and stored_hashes.get(relative_path) == digest:
+            continue
+
+        chunks = chunk_python(text, relative_path)
+
+        # Replace, not append: the old version may have had more chunks.
+        delete_file_records(relative_path)
+
+        if not chunks:
+            continue
+
+        print(f"Processing {relative_path}: {len(chunks)} chunks")
+        embeddings = embed_batch([chunk["text"] for chunk in chunks])
+        safe_path = relative_path.replace("/", "__")
+
+        collection.add(
+            ids=[f"{source}__{safe_path}-{i}" for i in range(len(chunks))],
+            documents=[chunk["text"] for chunk in chunks],
+            embeddings=embeddings,
+            metadatas=[
+                {
+                    "source": source,
+                    "path": str(py_file),
+                    "relative_path": relative_path,
+                    "heading": chunk["heading"],
+                    "start_line": chunk["start_line"],
+                    "chunk_index": i,
+                    "file_hash": digest,
+                }
+                for i, chunk in enumerate(chunks)
+            ],
+        )
+        added += len(chunks)
+
+    rebuild_manifest(collection, CODE_MANIFEST_PATH)
+    return added
+
+
 def rebuild_manifest(collection, path: Path | None = None) -> int:
     """Regenerate the manifest from the collection after ingest.
 
