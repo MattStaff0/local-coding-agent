@@ -72,6 +72,8 @@ local-ai-coding-agent/
 | `RAG_PROMPT_BUDGET` | `12000` | Character budget for retrieved documentation context in the prompt |
 | `RAG_MANIFEST_PATH` | `manifest.jsonl` | Path to the generated JSONL chunk manifest used for BM25 retrieval |
 | `STUDY_NOTES_DIR` | `study-notes` | Where `/export` writes study notes (point it at your vault) |
+| `LCA_HOME` | project directory | Overrides where the docs, index, and chat history live (`src/paths.py`) |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Point at a remote Ollama, e.g. the PC from the MacBook: `OLLAMA_HOST=http://192.168.x.x:11434` |
 
 ## What Each Python File Does
 
@@ -97,7 +99,10 @@ local-ai-coding-agent/
 `src/ask.py` is the terminal interface:
 
 - starts an interactive chat if no question is passed
-- streams answers token-by-token
+- streams answers token-by-token, live-rendered as markdown with
+  syntax-highlighted code blocks on a real terminal (plain text when piped)
+- prompt has up-arrow history and tab-completion for slash commands
+  (`/help` lists them all)
 - persists chat history across sessions (`chat_history.json`)
 - prints a citation legend mapping each `[n]` in the answer to `file § heading`
 - supports `/sources` and `/source <name>` to scope answers to one source
@@ -158,6 +163,23 @@ Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+### Install the `lca` command
+
+An editable install adds an `lca` console command that works from any
+directory — data paths (docs, index, chat history) always resolve to this
+project via `src/paths.py`, so running `lca` from another folder never
+creates a stray `chroma_db/` there:
+
+```bash
+pip install -e .
+lca                      # interactive chat from anywhere
+lca "How do RNNs work?"  # one-shot question
+```
+
+Packaging note: the project installs the flat `src/*.py` modules top-level
+(`rag`, `ask`, `ui`, …) rather than as a package — renaming to a package
+would churn every import in the repo for zero behavior change.
 
 Install Ollama from:
 
@@ -249,18 +271,18 @@ What does the forward method do?
 How do Python lists work?
 ```
 
-Scope answers to one documentation source (a top-level `docs/` folder):
+On a real terminal the answer streams as live-rendered markdown (headings,
+tables, syntax-highlighted code), the prompt supports up-arrow history and
+tab-completion, and a spinner shows while retrieval runs. Piped output stays
+plain text. `/help` lists all commands:
 
 ```text
-/sources          list indexed sources
-/source pytorch   answer only from docs/pytorch/
-/source all       search everything again
-```
-
-Exit chat:
-
-```text
-/exit
+/help             show this help
+/sources          list indexed doc sources
+/source <name>    answer only from one source (/source all to reset)
+/agent <question> search this codebase live with tools
+/export           save the last answer as a study note
+/exit             quit
 ```
 
 You can also ask one question directly:
