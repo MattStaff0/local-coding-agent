@@ -348,6 +348,35 @@ allowlist (tool names are namespaced `server_tool`). An optional
 total loadout at 8 tools or fewer — small local models degrade sharply when
 choosing between more, and the CLI warns when a config exceeds it.
 
+## Code Indexing (`/code`)
+
+Python repos index into a second Chroma collection (`local_code`) with an
+ast-based chunker: one chunk per top-level function/class (decorators and
+docstrings kept, oversized classes split per method), plus a module chunk
+for imports and constants. Docs and code share the same hybrid retrieval
+machinery but separate collections and manifests, so docs retrieval numbers
+are untouched.
+
+```bash
+python src/ingest_code.py .                                # index this repo
+python src/ingest_code.py ~/school/dl-project --name dl-project
+```
+
+Then in chat:
+
+```text
+/code where is the relevance cutoff applied?
+```
+
+Citations point at jumpable locations (`src/rag.py:478 § src/rag.py > retrieve`).
+Re-run `ingest_code.py` after code changes — it is incremental (content
+hashes), so unchanged files are never re-embedded. Score the code index with
+`python src/eval_retrieval.py --code` (golden set: `tests/golden_code.yaml`).
+
+Stretch experiment: compare `OLLAMA_EMBED_MODEL=nomic-embed-text` against a
+code-tuned embedder (e.g. CodeRankEmbed) with `eval_retrieval.py --code` on
+the PC — numbers decide, not vibes.
+
 ## Current Memory Behavior
 
 The chat has persistent memory:
