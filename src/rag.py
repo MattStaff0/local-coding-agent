@@ -9,7 +9,7 @@ import chromadb.errors
 import httpx
 import manifest as manifest_module
 import ollama
-from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH
+from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
 from rank_bm25 import BM25Okapi
 
 
@@ -26,6 +26,10 @@ class NoRelevantDocsError(RuntimeError):
 # The model names read the environment first so switching models (3B on the
 # laptop, 12B on the PC) never needs a code edit.
 COLLECTION_NAME = "local_docs"
+CODE_COLLECTION_NAME = "local_code"
+CODE_MANIFEST_PATH = Path(
+    os.getenv("RAG_CODE_MANIFEST_PATH", PROJECT_ROOT / "code-manifest.jsonl")
+)
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_HISTORY_TURNS = 6
@@ -500,31 +504,44 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
-# Loaded once per process and reused across queries; the mtime check makes a
-# fresh ingest visible without restarting chat.
-_manifest_cache: dict[str, Any] = {"mtime": None, "records": [], "bm25": {}}
+# Loaded once per process and reused across queries, keyed by manifest path
+# so the docs and code manifests never share cache entries; the mtime check
+# makes a fresh ingest visible without restarting chat.
+_manifest_cache: dict[str, Any] = {}
 _warned_no_manifest = False
 
 
-def _load_manifest_cached() -> list[dict[str, Any]]:
+def _cache_entry(manifest_path: Path) -> dict[str, Any]:
+    key = str(manifest_path)
+    if key not in _manifest_cache:
+        _manifest_cache[key] = {"mtime": None, "records": [], "bm25": {}}
+    return _manifest_cache[key]
+
+
+def _load_manifest_cached(manifest_path: Path) -> list[dict[str, Any]]:
+    entry = _cache_entry(manifest_path)
+
     try:
-        mtime = MANIFEST_PATH.stat().st_mtime_ns
+        mtime = manifest_path.stat().st_mtime_ns
     except FileNotFoundError:
-        _manifest_cache.update(mtime=None, records=[], bm25={})
+        entry.update(mtime=None, records=[], bm25={})
         return []
 
-    if _manifest_cache["mtime"] != mtime:
-        _manifest_cache.update(
+    if entry["mtime"] != mtime:
+        entry.update(
             mtime=mtime,
-            records=manifest_module.load_manifest(MANIFEST_PATH),
+            records=manifest_module.load_manifest(manifest_path),
             bm25={},
         )
 
-    return _manifest_cache["records"]
+    return entry["records"]
 
 
-def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
-    records = _load_manifest_cached()
+def _bm25_for_source(
+    source: str | None, manifest_path: Path | None = None
+) -> tuple[BM25Okapi, list[str]] | None:
+    manifest_path = manifest_path if manifest_path is not None else MANIFEST_PATH
+    records = _load_manifest_cached(manifest_path)
     subset = [
         record
         for record in records
@@ -534,14 +551,15 @@ def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
     if not subset:
         return None
 
+    entry = _cache_entry(manifest_path)
     key = source or ""
-    if key not in _manifest_cache["bm25"]:
-        _manifest_cache["bm25"][key] = (
+    if key not in entry["bm25"]:
+        entry["bm25"][key] = (
             BM25Okapi([record["tokens"] for record in subset]),
             [record["id"] for record in subset],
         )
 
-    return _manifest_cache["bm25"][key]
+    return entry["bm25"][key]
 
 
 def _bm25_rank_ids(question: str, bm25: BM25Okapi, ids: list[str]) -> list[str]:
@@ -644,19 +662,30 @@ def retrieve(
     n_results: int = 4,
     source: str | None = None,
     mode: str = "hybrid",
+    collection_name: str = COLLECTION_NAME,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Find the most relevant indexed doc chunks for a user question.
+    """Find the most relevant indexed chunks for a user question.
 
-    Pass a source name (a top-level docs/ folder) to search only that source.
-    The default hybrid mode fuses vector and BM25 keyword rankings with RRF —
-    embeddings catch paraphrases, BM25 catches exact identifiers; pass
-    mode="vector" for pure semantic search.
+    Pass a source name (a top-level docs/ folder, or a repo name for code)
+    to search only that source. The default hybrid mode fuses vector and
+    BM25 keyword rankings with RRF — embeddings catch paraphrases, BM25
+    catches exact identifiers; pass mode="vector" for pure semantic search.
+    The docs defaults keep every existing caller unchanged; pass
+    collection_name/manifest_path to search the code index instead.
     """
     if mode not in ("hybrid", "vector"):
         raise ValueError(f"Unknown retrieval mode '{mode}'; use 'hybrid' or 'vector'.")
 
+    if manifest_path is None:
+        manifest_path = (
+            CODE_MANIFEST_PATH
+            if collection_name == CODE_COLLECTION_NAME
+            else MANIFEST_PATH
+        )
+
     client = get_client()
-    collection = client.get_collection(name=COLLECTION_NAME)
+    collection = client.get_collection(name=collection_name)
     where = {"source": source} if source else None
 
     # The question has to be embedded with the same model used for the docs.
@@ -671,7 +700,7 @@ def retrieve(
     if mode != "hybrid":
         return vector_results
 
-    cached = _bm25_for_source(source)
+    cached = _bm25_for_source(source, manifest_path)
 
     if cached is None:
         return _retrieve_hybrid_slow(
@@ -713,10 +742,10 @@ def retrieve(
     }
 
 
-def list_sources() -> list[str]:
+def list_sources(collection_name: str = COLLECTION_NAME) -> list[str]:
     """List the source names currently present in the index."""
     client = get_client()
-    collection = client.get_collection(name=COLLECTION_NAME)
+    collection = client.get_collection(name=collection_name)
 
     records = collection.get(include=["metadatas"])
 
