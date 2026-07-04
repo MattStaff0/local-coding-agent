@@ -38,3 +38,44 @@ def test_one_shot_still_works_without_session(tmp_path, monkeypatch):
     _scripted_ollama(monkeypatch, [{"content": "ok", "tool_calls": []}])
     answer, trace = agent.run_agent("q", root=tmp_path)
     assert answer == "ok"
+
+
+def test_parse_agent_subcommands():
+    assert agent.parse_agent_command("/agent reset") == ("reset", "")
+    assert agent.parse_agent_command("/agent root ~/school/proj") == ("root", "~/school/proj")
+    assert agent.parse_agent_command("/agent why?") == ("ask", "why?")
+    assert agent.parse_agent_command("/agent") == ("status", "")
+    assert agent.parse_agent_command("plain text") is None
+
+
+def test_root_change_starts_fresh_session(tmp_path, monkeypatch):
+    import ask
+    import ui
+
+    new_root = tmp_path / "other-repo"
+    new_root.mkdir()
+    recorded = []
+
+    def fake_run_agent(question, root=None, session=None, **kwargs):
+        recorded.append((question, session.root, len(session.messages)))
+        return "ok", []
+
+    inputs = iter([
+        "/agent first question",
+        f"/agent root {new_root}",
+        "/agent second question",
+        "/exit",
+    ])
+    monkeypatch.setattr(ask, "run_agent", fake_run_agent)
+    monkeypatch.setattr(ask, "load_history", lambda path: [])
+    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
+
+    ask.chat_loop(
+        renderer=ui.PlainRenderer(),
+        read_input=lambda prompt_text: next(inputs),
+    )
+
+    # Fresh session after a root change: no carried-over messages, new root.
+    # (len is taken before run_agent appends, so both calls see 0 prior.)
+    assert recorded[0][1] != new_root and recorded[0][2] == 0
+    assert recorded[1] == ("second question", new_root, 0)

@@ -165,13 +165,16 @@ def test_unknown_tool_calls_are_reported_to_the_model(
 
 
 def test_parse_agent_command_extracts_the_question() -> None:
-    assert agent.parse_agent_command("/agent where is retrieve?") == "where is retrieve?"
+    assert agent.parse_agent_command("/agent where is retrieve?") == (
+        "ask",
+        "where is retrieve?",
+    )
 
 
 def test_parse_agent_command_ignores_other_lines() -> None:
     assert agent.parse_agent_command("where is retrieve?") is None
-    assert agent.parse_agent_command("/agent") is None
-    assert agent.parse_agent_command("/agent   ") is None
+    assert agent.parse_agent_command("/agent") == ("status", "")
+    assert agent.parse_agent_command("/agent   ") == ("status", "")
     assert agent.parse_agent_command("/agentfoo") is None
     assert agent.parse_agent_command("/agents list") is None
 

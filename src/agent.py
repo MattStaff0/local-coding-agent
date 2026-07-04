@@ -186,16 +186,32 @@ def run_agent(
     )
 
 
-def parse_agent_command(line: str) -> str | None:
-    """Extract the question from '/agent <question>', if this line is one."""
+def parse_agent_command(line: str) -> tuple[str, str] | None:
+    """Parse '/agent ...' into (subcommand, argument).
+
+    Returns ("ask", question), ("reset", ""), ("root", path), ("status", "")
+    or None when the line is not an /agent command. Only exact 'reset'/'root'
+    first words are subcommands — anything else is part of a question.
+    """
     stripped = line.strip()
 
     if stripped != "/agent" and not stripped.startswith("/agent "):
         return None
 
-    question = stripped.removeprefix("/agent").strip()
+    rest = stripped.removeprefix("/agent").strip()
 
-    return question or None
+    if not rest:
+        return ("status", "")
+
+    first, _, remainder = rest.partition(" ")
+
+    if first == "reset" and not remainder:
+        return ("reset", "")
+
+    if first == "root":
+        return ("root", remainder.strip())
+
+    return ("ask", rest)
 
 
 def format_agent_reply(answer: str, trace: list[str]) -> str:

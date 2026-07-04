@@ -250,13 +250,43 @@ def chat_loop(renderer=None, read_input=None) -> None:
             renderer.show_message(f"Saved study note: {path}")
             continue
 
-        agent_question = parse_agent_command(question)
-        if agent_question is not None:
+        agent_command = parse_agent_command(question)
+        if agent_command is not None:
+            subcommand, argument = agent_command
+
+            if subcommand == "status":
+                if agent_session is None:
+                    renderer.show_message(
+                        "No agent session yet. Ask with /agent <question>."
+                    )
+                else:
+                    renderer.show_message(
+                        f"Agent root: {agent_session.root} "
+                        f"({len(agent_session.messages)} messages)"
+                    )
+                continue
+
+            if subcommand == "reset":
+                agent_session = None
+                renderer.show_message("Agent session cleared.")
+                continue
+
+            if subcommand == "root":
+                new_root = Path(argument).expanduser()
+                if not new_root.is_dir():
+                    renderer.show_error(f"No such directory: {argument}")
+                    continue
+                # Fresh session on purpose: old context describes the old
+                # repo, and carrying it over invites cross-repo hallucination.
+                agent_session = AgentSession(root=new_root)
+                renderer.show_message(f"Agent root set to {new_root} (fresh session).")
+                continue
+
             if agent_session is None:
                 agent_session = AgentSession(root=Path.cwd())
 
             try:
-                answer, trace = run_agent(agent_question, session=agent_session)
+                answer, trace = run_agent(argument, session=agent_session)
             except Exception as error:
                 renderer.show_error(f"\n{describe_error(error)}")
                 continue
