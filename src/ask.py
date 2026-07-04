@@ -10,6 +10,7 @@ from typing import Any
 import chromadb.errors
 import httpx
 
+import paths
 from agent import format_agent_reply, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
@@ -24,12 +25,12 @@ NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
 # Chat history persists across restarts; only the recent tail is saved so the
 # file cannot grow without bound (the prompt is capped separately by
 # rag.MAX_HISTORY_TURNS).
-HISTORY_FILE = Path("chat_history.json")
+HISTORY_FILE = paths.HISTORY_FILE
 MAX_SAVED_MESSAGES = 100
 
 # Where /export writes study notes. Point this at the Obsidian vault, e.g.
 # STUDY_NOTES_DIR="$HOME/Documents/matt-vault/study-notes".
-EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", "study-notes"))
+EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", paths.PROJECT_ROOT / "study-notes"))
 
 
 def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:

@@ -9,6 +9,7 @@ import chromadb.errors
 import httpx
 import manifest as manifest_module
 import ollama
+from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH
 from rank_bm25 import BM25Okapi
 
 
@@ -24,9 +25,6 @@ class NoRelevantDocsError(RuntimeError):
 # Keeping them here makes rag.py the source of truth for model/database settings.
 # The model names read the environment first so switching models (3B on the
 # laptop, 12B on the PC) never needs a code edit.
-DOCS_DIR = Path("docs")
-DB_DIR = "chroma_db"
-MANIFEST_PATH = Path(os.getenv("RAG_MANIFEST_PATH", "manifest.jsonl"))
 COLLECTION_NAME = "local_docs"
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
