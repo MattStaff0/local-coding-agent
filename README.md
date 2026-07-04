@@ -114,6 +114,12 @@ local-ai-coding-agent/
 - the model drives sandboxed `list_files` / `grep` / `read_file` tools in a
   loop with guardrails (iteration cap, repeated-call breaker, output caps)
 - run it directly: `python src/agent.py "where is the similarity search?"`
+- see the "Agent v2" section below for sessions, edits, and MCP
+
+`src/mcp_client.py` is the hand-rolled MCP client:
+
+- reads `mcp.json`, connects each server over stdio on a background asyncio
+  thread, and exposes synchronous `owns()` / `call()` to the agent loop
 
 `src/eval_retrieval.py` measures retrieval quality:
 
@@ -294,6 +300,53 @@ python src/ask.py "How do I create a neural network in PyTorch?"
 Answers are checked after generation for citation shape. If the model omits
 `[n]` citations or cites a chunk number that was not sent in the prompt, the
 CLI prints a grounding warning but does not rerun or reject the answer.
+
+## Agent v2: Sessions, Edits, MCP
+
+`/agent` conversations are now persistent within a chat session — follow-up
+`/agent` questions remember earlier ones. Subcommands:
+
+```text
+/agent <question>     ask (continues the current session)
+/agent                show current root and message count
+/agent reset          clear the session
+/agent root <path>    point the agent at another repo (starts a fresh session)
+```
+
+The agent can also propose file edits (`edit_file`, `write_file`) and run
+allowlisted commands (`run_command`: only `pytest` and `python`). Every
+write or run shows a unified diff (or the command line) and asks
+`Apply? [y/N]` first — declining is an answer the model sees, not an error:
+
+```text
+edit_file src/rag.py
+--- a/src/rag.py
++++ b/src/rag.py
+@@ ...
+Apply? [y/N]:
+```
+
+### MCP servers (`mcp.json`)
+
+External tools come from MCP servers declared in `mcp.json` at the project
+root (requires [`uvx`](https://docs.astral.sh/uv/)); servers start lazily on
+the first `/agent` call:
+
+```json
+{
+  "servers": {
+    "git":   {"command": "uvx", "args": ["mcp-server-git", "--repository", "."],
+              "tools": ["git_status", "git_diff_unstaged", "git_log"]},
+    "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "tools": ["fetch"]}
+  }
+}
+```
+
+To add a server: add an entry with its launch command and a `"tools"`
+allowlist (tool names are namespaced `server_tool`). An optional
+`"confirm": [...]` list routes specific tools through the y/N gate. Keep the
+total loadout at 8 tools or fewer — small local models degrade sharply when
+choosing between more, and the CLI warns when a config exceeds it.
 
 ## Current Memory Behavior
 
