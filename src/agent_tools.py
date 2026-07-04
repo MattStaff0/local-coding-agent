@@ -1,3 +1,4 @@
+import difflib
 import re
 from pathlib import Path
 
@@ -116,3 +117,49 @@ def read_file(root: Path, path: str, start_line: int = 1) -> str:
         return f"{path} has no line {start_line}; the file has {len(lines)} lines."
 
     return "\n".join(picked)
+
+
+def _unified_diff(path: str, old: str, new: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"a/{path}", tofile=f"b/{path}",
+        )
+    )
+
+
+def preview_edit(root: Path, path: str, old_text: str, new_text: str) -> dict:
+    """Exact-match replacement preview; ambiguity is an error, not a guess."""
+    target = _resolve_inside(root, path)
+
+    if not target.is_file():
+        return {"error": f"No such file: {path}"}
+
+    content = target.read_text(encoding="utf-8")
+    count = content.count(old_text)
+
+    if count == 0:
+        return {"error": f"old_text not found in {path}."}
+    if count > 1:
+        return {
+            "error": (
+                f"old_text appears {count} times in {path}; "
+                "include more context to make it unique."
+            )
+        }
+
+    new_content = content.replace(old_text, new_text, 1)
+    return {"diff": _unified_diff(path, content, new_content), "new_content": new_content}
+
+
+def preview_write(root: Path, path: str, content: str) -> dict:
+    target = _resolve_inside(root, path)
+    old = target.read_text(encoding="utf-8") if target.is_file() else ""
+    return {"diff": _unified_diff(path, old, content), "new_content": content}
+
+
+def apply_content(root: Path, path: str, new_content: str) -> str:
+    target = _resolve_inside(root, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(new_content, encoding="utf-8")
+    return f"Wrote {path}"
