@@ -9,3 +9,6 @@ chat_history.json
 chat_history.json.bak
 manifest.jsonl
 study-notes/
+
+*.egg-info/
+.ask_history

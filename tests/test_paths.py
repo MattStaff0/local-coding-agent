@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
@@ -36,3 +37,12 @@ def test_lca_home_overrides_root(tmp_path):
         capture_output=True, text=True, check=True,
     )
     assert result.stdout.strip() == str(tmp_path)
+
+
+def test_entry_point_declared():
+    with open(SRC.parent / "pyproject.toml", "rb") as f:
+        config = tomllib.load(f)
+
+    assert config["project"]["scripts"]["lca"] == "ask:main"
+    assert any(d.startswith("rich") for d in config["project"]["dependencies"])
+    assert any(d.startswith("prompt_toolkit") for d in config["project"]["dependencies"])

@@ -6,3 +6,5 @@ ollama
 pyyaml
 pytest
 rank_bm25
+rich
+prompt_toolkit
