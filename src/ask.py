@@ -11,6 +11,7 @@ import chromadb.errors
 import httpx
 
 import paths
+import ui
 from agent import format_agent_reply, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
@@ -136,12 +137,22 @@ def print_token(token: str) -> None:
     print(token, end="", flush=True)
 
 
-def print_sources(metadatas: list[dict[str, Any]]) -> None:
-    """Show the citation legend: which chunk each [n] in the answer refers to."""
-    print("\nSources:")
+def safe_list_sources() -> list[str]:
+    """Indexed source names for tab-completion; never crash the prompt."""
+    try:
+        return list_sources()
+    except Exception:
+        return []
 
-    for line in source_legend(metadatas):
-        print(f"  {line}")
+
+HELP_TEXT = """\
+Commands:
+  /help             show this help
+  /sources          list indexed doc sources
+  /source <name>    answer only from one source (/source all to reset)
+  /agent <question> search this codebase live with tools
+  /export           save the last answer as a study note
+  /exit             quit"""
 
 
 def apply_source_command(
@@ -190,47 +201,52 @@ def apply_source_command(
     return False, active_source, ""
 
 
-def chat_loop() -> None:
+def chat_loop(renderer=None, read_input=None) -> None:
     """Run an interactive terminal chat with persistent memory."""
+    renderer = renderer or ui.make_renderer()
+    read_input = read_input or ui.make_input(safe_list_sources)
+
     # Pass the module globals explicitly: default arguments bind at def time,
     # which would ignore a HISTORY_FILE override (tests, future config).
     history = load_history(HISTORY_FILE)
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
 
-    print("Local RAG chat")
-    print("Type your question, or type /exit to quit.")
-    print("Scope answers with /sources, /source <name>, /source all.")
-    print("Search this codebase live with /agent <question>.")
-    print("Save the last answer as a study note with /export.")
+    renderer.show_message("Local RAG chat")
+    renderer.show_message("Type your question, /help for commands, /exit to quit.")
 
     if history:
-        print(f"(restored {len(history)} messages from {HISTORY_FILE})")
+        renderer.show_message(f"(restored {len(history)} messages from {HISTORY_FILE})")
 
     while True:
-        question = input("\nYou: ").strip()
+        prompt_text = f"[{active_source}] You: " if active_source else "You: "
+        question = read_input(prompt_text).strip()
 
         # Ignore blank lines so accidental Enter presses do not call the model.
         if not question:
             continue
 
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
-            print("Goodbye.")
+            renderer.show_message("Goodbye.")
             return
+
+        if question == "/help":
+            renderer.show_message(HELP_TEXT)
+            continue
 
         if question == "/export":
             if last_export is None:
-                print("Nothing to export yet — ask a question first.")
+                renderer.show_message("Nothing to export yet — ask a question first.")
                 continue
 
             try:
                 path = export_note(*last_export, notes_dir=EXPORT_DIR)
             except OSError as error:
                 # A bad STUDY_NOTES_DIR must not kill the whole chat session.
-                print(f"Could not write the study note ({error}).")
+                renderer.show_error(f"Could not write the study note ({error}).")
                 continue
 
-            print(f"Saved study note: {path}")
+            renderer.show_message(f"Saved study note: {path}")
             continue
 
         agent_question = parse_agent_command(question)
@@ -238,32 +254,31 @@ def chat_loop() -> None:
             try:
                 answer, trace = run_agent(agent_question, root=Path.cwd())
             except Exception as error:
-                print(f"\n{describe_error(error)}")
+                renderer.show_error(f"\n{describe_error(error)}")
                 continue
 
-            print("\n" + format_agent_reply(answer, trace))
+            renderer.show_message("\n" + format_agent_reply(answer, trace))
             continue
 
         handled, active_source, message = apply_source_command(
             question, active_source
         )
         if handled:
-            print(message)
+            renderer.show_message(message)
             continue
-
-        print("\nAssistant:\n")
 
         try:
             # The answer streams to the terminal as the model writes it.
-            answer, metadatas = answer_question(
-                question, history, active_source, on_token=print_token
-            )
+            with renderer.status("thinking…"):
+                answer, metadatas = answer_question(
+                    question, history, active_source, on_token=renderer.on_token
+                )
         except Exception as error:
-            print(describe_error(error))
+            renderer.show_error(describe_error(error))
             continue
 
-        print()
-        print_sources(metadatas)
+        renderer.finish_answer()
+        renderer.show_sources(source_legend(metadatas))
 
         # Save the turn after the model answers so follow-up questions have
         # enough context to understand words like "that" or "it".
@@ -275,7 +290,7 @@ def chat_loop() -> None:
             save_history(history, HISTORY_FILE)
         except OSError as error:
             # Losing persistence is worth a warning, not a dead session.
-            print(f"(could not save chat history: {error})")
+            renderer.show_message(f"(could not save chat history: {error})")
 
 
 def main() -> None:
@@ -288,16 +303,19 @@ def main() -> None:
     # python src/ask.py "How do I make a PyTorch model?"
     question = " ".join(sys.argv[1:])
 
-    print("Answer:\n")
+    renderer = ui.make_renderer()
+    renderer.show_message("Answer:\n")
 
     try:
-        answer, metadatas = answer_question(question, history=[], on_token=print_token)
+        answer, metadatas = answer_question(
+            question, history=[], on_token=renderer.on_token
+        )
     except Exception as error:
-        print(describe_error(error))
+        renderer.show_error(describe_error(error))
         raise SystemExit(1)
 
-    print()
-    print_sources(metadatas)
+    renderer.finish_answer()
+    renderer.show_sources(source_legend(metadatas))
 
 
 if __name__ == "__main__":
