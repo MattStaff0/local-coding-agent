@@ -3,11 +3,19 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import ollama
 
-from agent_tools import grep_files, list_files, read_file
+from agent_tools import (
+    apply_content,
+    grep_files,
+    list_files,
+    preview_edit,
+    preview_write,
+    read_file,
+    run_command,
+)
 
 # Same env override as rag.CHAT_MODEL: the agent loop runs on whatever chat
 # model the machine has, without a code edit.
@@ -28,6 +36,11 @@ Method: grep for a specific identifier first, read only the files that
 matched, then answer. Cite evidence as path:line. If two different searches
 find nothing, say what you could not find instead of guessing. Never invent
 file contents.
+
+For code changes: use edit_file with the smallest unique old_text. The user
+approves or declines each change; a declined change is an answer, not an error.
+End answers about code with "Evidence:" followed by path:line citations
+from your tool results. Never cite lines you did not read.
 """
 
 TOOL_SCHEMAS = [
@@ -91,11 +104,103 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Replace one exact text match in a file; the user approves each change.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the project root.",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact text to replace; must appear exactly once.",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text.",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite one file; the user approves each write.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the project root.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full new file content.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run pytest or python in the project root; the user approves each run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Command line, like 'pytest -q' or 'python script.py'.",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
 
 
-def dispatch_tool(name: str, arguments: dict, root: Path) -> str:
-    """Run one tool call; every failure comes back as text for the model."""
+def _gated_write(
+    name: str,
+    preview: dict,
+    path: str,
+    root: Path,
+    confirm: Callable[[str, str], bool] | None,
+) -> str:
+    """Apply a previewed change only if the user approves the diff."""
+    if "error" in preview:
+        return preview["error"]
+
+    if confirm is None:
+        return "No confirmation channel available."
+
+    if not confirm(f"{name} {path}", preview["diff"]):
+        return "User declined the change."
+
+    apply_content(root, path, preview["new_content"])
+    return f"Applied:\n{preview['diff']}"
+
+
+def dispatch_tool(
+    name: str,
+    arguments: dict,
+    root: Path,
+    confirm: Callable[[str, str], bool] | None = None,
+) -> str:
+    """Run one tool call; every failure comes back as text for the model.
+
+    Write/run tools go through `confirm`; read tools never prompt.
+    """
     try:
         if name == "list_files":
             return list_files(root, arguments.get("subdir", "."))
@@ -105,10 +210,33 @@ def dispatch_tool(name: str, arguments: dict, root: Path) -> str:
 
         if name == "read_file":
             return read_file(root, arguments["path"], int(arguments.get("start_line", 1)))
+
+        if name == "edit_file":
+            preview = preview_edit(
+                root, arguments["path"], arguments["old_text"], arguments["new_text"]
+            )
+            return _gated_write(name, preview, arguments["path"], root, confirm)
+
+        if name == "write_file":
+            preview = preview_write(root, arguments["path"], arguments["content"])
+            return _gated_write(name, preview, arguments["path"], root, confirm)
+
+        if name == "run_command":
+            command = arguments["command"]
+
+            if confirm is None:
+                return "No confirmation channel available."
+            if not confirm(f"run: {command}", command):
+                return "User declined the change."
+
+            return run_command(root, command)
     except (KeyError, ValueError, TypeError) as error:
         return f"Tool error: {error}"
 
-    return f"Unknown tool '{name}'. Available: list_files, grep, read_file."
+    return (
+        f"Unknown tool '{name}'. Available: list_files, grep, read_file, "
+        "edit_file, write_file, run_command."
+    )
 
 
 @dataclass
@@ -124,6 +252,7 @@ def run_agent(
     root: Path | None = None,
     max_iterations: int = MAX_ITERATIONS,
     session: AgentSession | None = None,
+    confirm: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, list[str]]:
     """Answer a codebase question by letting the model drive search tools.
 
@@ -171,7 +300,7 @@ def run_agent(
                     "result, or answer with what you have."
                 )
             else:
-                result = dispatch_tool(name, arguments, session.root)
+                result = dispatch_tool(name, arguments, session.root, confirm)
 
             last_signature = signature
             trace.append(f"{name}({arguments})")

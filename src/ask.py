@@ -285,8 +285,16 @@ def chat_loop(renderer=None, read_input=None) -> None:
             if agent_session is None:
                 agent_session = AgentSession(root=Path.cwd())
 
+            def confirm(description: str, preview: str) -> bool:
+                renderer.show_message(f"\n{description}")
+                if preview != description:
+                    renderer.show_message(preview)
+                return read_input("Apply? [y/N]: ").strip().lower() in {"y", "yes"}
+
             try:
-                answer, trace = run_agent(argument, session=agent_session)
+                answer, trace = run_agent(
+                    argument, session=agent_session, confirm=confirm
+                )
             except Exception as error:
                 renderer.show_error(f"\n{describe_error(error)}")
                 continue

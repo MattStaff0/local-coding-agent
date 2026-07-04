@@ -60,7 +60,14 @@ def test_every_schema_is_a_complete_function_definition() -> None:
         assert function["parameters"]["type"] == "object"
         names.add(function["name"])
 
-    assert names == {"list_files", "grep", "read_file"}
+    assert names == {
+        "list_files",
+        "grep",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "run_command",
+    }
 
 
 def scripted_chat(monkeypatch: pytest.MonkeyPatch, responses: list[dict]) -> list[dict]:
