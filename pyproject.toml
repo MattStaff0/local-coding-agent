@@ -17,6 +17,7 @@ dependencies = [
     "rank_bm25",
     "rich",
     "prompt_toolkit",
+    "mcp",
 ]
 
 [project.scripts]
@@ -26,5 +27,5 @@ lca = "ask:main"
 package-dir = { "" = "src" }
 py-modules = [
     "agent", "agent_tools", "ask", "eval_retrieval",
-    "fetch_docs", "ingest", "manifest", "paths", "rag", "ui",
+    "fetch_docs", "ingest", "manifest", "mcp_client", "paths", "rag", "ui",
 ]
