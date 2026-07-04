@@ -9,6 +9,7 @@ retrieval changes should move these numbers, not vibes.
 """
 
 import argparse
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +18,16 @@ import yaml
 import rag
 
 GOLDEN_PATH = Path("tests/golden.yaml")
+GOLDEN_CODE_PATH = Path("tests/golden_code.yaml")
+
+
+def code_retrieve_fn() -> Callable[..., dict[str, Any]]:
+    """Retrieve against the code collection instead of the docs."""
+    return partial(
+        rag.retrieve,
+        collection_name=rag.CODE_COLLECTION_NAME,
+        manifest_path=rag.CODE_MANIFEST_PATH,
+    )
 
 
 def load_golden(path: Path = GOLDEN_PATH) -> list[dict[str, str]]:
@@ -119,10 +130,19 @@ def format_report(report: dict[str, Any], k: int) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score retrieval on golden.yaml")
     parser.add_argument("--k", type=int, default=4, help="results per query")
+    parser.add_argument(
+        "--code",
+        action="store_true",
+        help="score the code collection against golden_code.yaml",
+    )
     args = parser.parse_args()
 
-    golden = load_golden()
-    report = evaluate(golden, k=args.k)
+    if args.code:
+        golden = load_golden(GOLDEN_CODE_PATH)
+        report = evaluate(golden, k=args.k, retrieve_fn=code_retrieve_fn())
+    else:
+        golden = load_golden()
+        report = evaluate(golden, k=args.k)
 
     print(format_report(report, k=args.k))
 
