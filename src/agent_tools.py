@@ -1,5 +1,7 @@
 import difflib
 import re
+import shlex
+import subprocess
 from pathlib import Path
 
 # Output caps protect the small model's context window: a tool result that
@@ -163,3 +165,36 @@ def apply_content(root: Path, path: str, new_content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_content, encoding="utf-8")
     return f"Wrote {path}"
+
+
+# Deliberately tiny: the agent can run tests and scripts, nothing else.
+# Growing this set is a review decision, not a convenience edit.
+ALLOWED_COMMANDS = {"pytest", "python"}
+
+
+def run_command(root: Path, command: str, timeout: int = 120) -> str:
+    """Run one allowlisted command inside root; every failure is a string."""
+    try:
+        argv = shlex.split(command)
+    except ValueError as error:
+        return f"Command not allowed: {error}"
+
+    if not argv or Path(argv[0]).name not in ALLOWED_COMMANDS:
+        allowed = ", ".join(sorted(ALLOWED_COMMANDS))
+        return f"Command not allowed: '{command}'. Allowed: {allowed}."
+
+    try:
+        completed = subprocess.run(
+            argv, cwd=root, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout}s: {command}"
+    except OSError as error:
+        return f"Command failed to start: {error}"
+
+    output = f"exit code {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+
+    if len(output) > MAX_FILE_CHARS:
+        output = output[:MAX_FILE_CHARS] + "\n... output truncated"
+
+    return output

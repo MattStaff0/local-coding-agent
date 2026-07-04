@@ -1,7 +1,7 @@
 """Write tools are pure: they compute diffs; the loop owns confirmation."""
 import pytest
 
-from agent_tools import apply_content, preview_edit, preview_write
+from agent_tools import apply_content, preview_edit, preview_write, run_command
 
 
 def test_preview_edit_produces_unified_diff(tmp_path):
@@ -36,3 +36,23 @@ def test_apply_content_writes_inside_root_only(tmp_path):
 
     with pytest.raises(ValueError):
         apply_content(tmp_path, "../escape.py", "bad")
+
+
+def test_disallowed_command_is_refused_without_running(tmp_path):
+    result = run_command(tmp_path, "rm -rf /")
+    assert "not allowed" in result
+    assert list(tmp_path.iterdir()) == []  # nothing happened
+
+
+def test_python_runs_in_root_with_output(tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi from test')", encoding="utf-8")
+    result = run_command(tmp_path, "python hello.py")
+    # allowlist matches basename, so plain "python hello.py" is the call shape
+    assert "exit code 0" in result
+    assert "hi from test" in result
+
+
+def test_empty_and_malformed_commands_are_errors(tmp_path):
+    assert "not allowed" in run_command(tmp_path, "")
+    # shlex keeps "pytest;" one arg -> basename mismatch, refused without crash
+    assert "not allowed" in run_command(tmp_path, "pytest; rm x")
