@@ -71,6 +71,11 @@ def test_syntax_error_falls_back_instead_of_raising():
     assert chunks[0]["heading"] == "bad.py > (unparsed)"
 
 
+def test_async_defs_get_their_own_chunk():
+    chunks = chunk_python("async def fetch():\n    return 1\n", "aio.py")
+    assert [c["heading"] for c in chunks] == ["aio.py > fetch"]
+
+
 def test_breadcrumb_is_first_line_of_text():
     chunks = chunk_python(SAMPLE, "src/sample.py")
     for chunk in chunks:

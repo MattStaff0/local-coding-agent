@@ -42,6 +42,22 @@ def test_rich_renderer_accumulates_and_resets_buffer():
     assert renderer.buffer == ""  # reset for the next turn
 
 
+def test_show_error_mid_stream_resets_the_buffer():
+    # An Ollama drop mid-answer must not leave the dead answer's text
+    # prefixed onto the next one.
+    console = Console(file=io.StringIO(), force_terminal=True)
+    renderer = ui.RichRenderer(console=console)
+    renderer.on_token("partial answer")
+    renderer.show_error("connection lost")
+
+    assert renderer.buffer == ""
+    assert renderer._live is None
+
+    renderer.on_token("fresh")
+    assert renderer.buffer == "fresh"
+    renderer.finish_answer()
+
+
 def test_completion_words_include_commands_and_sources():
     words = ui.completion_words(["python", "pytorch"])
     assert "/help" in words

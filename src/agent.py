@@ -320,7 +320,15 @@ def run_agent(
                 result = dispatch_tool(name, arguments, session.root, confirm)
 
             last_signature = signature
-            trace.append(f"{name}({arguments})")
+            # Mark failures in the trace: the model sees the error text, but
+            # the human only sees the trace — an all-failures run must not
+            # look identical to a healthy one.
+            failed = result.startswith(
+                ("Tool error:", "MCP tool error:", "Unknown tool",
+                 "Command not allowed", "Could not parse command",
+                 "Command timed out", "Command failed to start")
+            )
+            trace.append(f"{name}({arguments})" + (" -> ERROR" if failed else ""))
             session.messages.append(
                 {"role": "tool", "tool_name": name, "content": result}
             )

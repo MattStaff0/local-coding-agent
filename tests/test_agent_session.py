@@ -80,3 +80,45 @@ def test_root_change_starts_fresh_session(tmp_path, monkeypatch):
     # (len is taken before run_agent appends, so both calls see 0 prior.)
     assert recorded[0][1] != new_root and recorded[0][2] == 0
     assert recorded[1] == ("second question", new_root, 0)
+
+
+def test_malformed_mcp_json_degrades_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    import ask
+    import paths
+
+    (tmp_path / "mcp.json").write_text('{"servers": {oops', encoding="utf-8")
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
+
+    assert ask.start_mcp() is None
+    assert "mcp unavailable" in capsys.readouterr().out
+
+
+def test_chat_confirm_accepts_only_yes(tmp_path, monkeypatch):
+    """The y/N closure in chat_loop: y/yes approve, anything else declines."""
+    import ask
+    import ui
+
+    decisions = []
+
+    def fake_run_agent(question, root=None, session=None, confirm=None, **kwargs):
+        decisions.append(confirm("edit_file f.py", "+diff"))
+        return "ok", []
+
+    inputs = iter([
+        "/agent q1", "y",
+        "/agent q2", "YES",
+        "/agent q3", "",
+        "/agent q4", "n",
+        "/exit",
+    ])
+    monkeypatch.setattr(ask, "run_agent", fake_run_agent)
+    monkeypatch.setattr(ask, "start_mcp", lambda: None)
+    monkeypatch.setattr(ask, "load_history", lambda path: [])
+    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
+
+    ask.chat_loop(
+        renderer=ui.PlainRenderer(),
+        read_input=lambda prompt_text: next(inputs),
+    )
+
+    assert decisions == [True, True, False, False]

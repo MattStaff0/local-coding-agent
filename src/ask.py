@@ -143,7 +143,10 @@ def safe_list_sources() -> list[str]:
     """Indexed source names for tab-completion; never crash the prompt."""
     try:
         return list_sources()
-    except Exception:
+    except chromadb.errors.NotFoundError:
+        return []  # no index yet — nothing to complete, not an error
+    except Exception as error:
+        print(f"(source completion disabled: {type(error).__name__}: {error})")
         return []
 
 
@@ -153,16 +156,17 @@ def start_mcp():
     Returns None when nothing is configured or startup fails — the agent
     then runs with native tools only, which is a degradation, not an error.
     """
-    config = mcp_client.load_config(paths.PROJECT_ROOT / "mcp.json")
-
-    if not config.get("servers"):
-        return None
-
     try:
+        config = mcp_client.load_config(paths.PROJECT_ROOT / "mcp.json")
+
+        if not config.get("servers"):
+            return None
+
         manager = mcp_client.MCPManager(config)
         manager.start()
     except Exception as error:
-        print(f"(mcp unavailable: {error})")
+        # A typo in mcp.json must degrade to native tools, not kill the chat.
+        print(f"(mcp unavailable: {type(error).__name__}: {error})")
         return None
 
     return manager
@@ -254,6 +258,8 @@ def chat_loop(renderer=None, read_input=None) -> None:
             continue
 
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
+            if mcp_manager is not None:
+                mcp_manager.stop()
             renderer.show_message("Goodbye.")
             return
 
@@ -330,6 +336,9 @@ def chat_loop(renderer=None, read_input=None) -> None:
                 continue
 
             if subcommand == "root":
+                if not argument:
+                    renderer.show_error("Usage: /agent root <path>")
+                    continue
                 new_root = Path(argument).expanduser()
                 if not new_root.is_dir():
                     renderer.show_error(f"No such directory: {argument}")

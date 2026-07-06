@@ -38,10 +38,19 @@ def to_ollama_schema(server: str, tool) -> dict:
     }
 
 
-def allowed_tools(server_config: dict, tools: list) -> list:
-    """Keep only the tools the config explicitly allowlists."""
+def allowed_tools(server: str, server_config: dict, tools: list) -> list:
+    """Keep only the tools the config explicitly allowlists.
+
+    The allowlist uses namespaced names (what the model sees), so a config
+    entry like "notes_search" matches a server tool named just "search".
+    An empty/missing allowlist keeps everything.
+    """
     allowed = set(server_config.get("tools", []))
-    return [tool for tool in tools if tool.name in allowed]
+
+    if not allowed:
+        return list(tools)
+
+    return [tool for tool in tools if namespaced(server, tool.name) in allowed]
 
 
 class MCPManager:
@@ -81,7 +90,7 @@ class MCPManager:
             await session.initialize()
             return _SDKSession(session)
 
-        return self._run(connect)
+        return self._run(connect())
 
     def start(self) -> list[dict]:
         """Connect every configured server; return merged ollama schemas."""
@@ -96,18 +105,16 @@ class MCPManager:
                 session = self._session_factory(server, server_config)
                 tools = self._run(session.list_tools())
             except Exception as error:
-                print(f"(mcp: server '{server}' unavailable: {error})")
+                print(
+                    f"(mcp: server '{server}' unavailable: "
+                    f"{type(error).__name__}: {error})"
+                )
                 continue
 
-            allowed = set(server_config.get("tools", []))
             gated = set(server_config.get("confirm", []))
 
-            for tool in tools:
+            for tool in allowed_tools(server, server_config, tools):
                 name = namespaced(server, tool.name)
-
-                if allowed and name not in allowed:
-                    continue
-
                 self._routes[name] = (session, tool.name)
                 if name in gated:
                     self._confirm_tools.add(name)
@@ -132,9 +139,17 @@ class MCPManager:
                 for item in result.content
                 if getattr(item, "type", "") == "text"
             ]
-            return "\n".join(texts)
+            dropped = len(result.content) - len(texts)
+            if dropped:
+                texts.append(f"({dropped} non-text content items omitted)")
+
+            output = "\n".join(texts)
+            if getattr(result, "isError", False):
+                return f"MCP tool error: {output}"
+            return output
         except Exception as error:
-            return f"MCP tool error: {error}"
+            # Include the type: a timed-out future stringifies to "".
+            return f"MCP tool error: {type(error).__name__}: {error}"
 
     def stop(self) -> None:
         if self._loop is None:
@@ -142,8 +157,8 @@ class MCPManager:
 
         try:
             self._run(self._stack.aclose(), timeout=10)
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"(mcp: shutdown error: {type(error).__name__}: {error})")
 
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=10)

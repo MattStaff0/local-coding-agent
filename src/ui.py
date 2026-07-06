@@ -55,17 +55,24 @@ class RichRenderer:
         self.buffer += token
         self._live.update(Markdown(self.buffer))
 
-    def finish_answer(self) -> None:
+    def _reset_stream(self) -> None:
         if self._live is not None:
             self._live.stop()
             self._live = None
         self.buffer = ""
+
+    def finish_answer(self) -> None:
+        self._reset_stream()
         self.console.print()
 
     def show_message(self, text: str) -> None:
         self.console.print(text)
 
     def show_error(self, text: str) -> None:
+        # An error can arrive mid-stream (Ollama drops the connection);
+        # without this reset the dead answer's partial text would silently
+        # prefix the next answer.
+        self._reset_stream()
         self.console.print(f"[red]{text}[/red]")
 
     def show_sources(self, legend_lines: list[str]) -> None:

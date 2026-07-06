@@ -78,6 +78,31 @@ def test_edited_file_reembeds_only_that_file(mini_repo, code_env):
     assert rag.index_code(mini_repo) == 1
 
 
+def test_deleted_file_drops_only_its_own_records(mini_repo, code_env, tmp_path):
+    client, _ = code_env
+    rag.index_code(mini_repo)
+
+    # A second repo sharing the same relative filename must survive the
+    # first repo's deletion (the delete is scoped by source).
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "util.py").write_text("def solo():\n    return 9\n", encoding="utf-8")
+    rag.index_code(other, repo_name="second")
+
+    (mini_repo / "util.py").unlink()
+    rag.index_code(mini_repo)
+
+    collection = client.get_collection(rag.CODE_COLLECTION_NAME)
+    remaining = collection.get(include=["metadatas"])["metadatas"]
+    keys = {(m["source"], m["relative_path"]) for m in remaining}
+    assert keys == {("myproject", "src/app.py"), ("second", "util.py")}
+
+
+def test_full_reembeds_unchanged_files(mini_repo, code_env):
+    rag.index_code(mini_repo)
+    assert rag.index_code(mini_repo, full=True) == 2  # hash skip bypassed
+
+
 def test_second_repo_keeps_the_first(mini_repo, code_env, tmp_path):
     client, _ = code_env
     rag.index_code(mini_repo)

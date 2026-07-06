@@ -51,6 +51,61 @@ def test_no_confirm_channel_declines_writes(tmp_path):
     assert (tmp_path / "f.py").read_text() == "a = 1\n"
 
 
+def test_declined_run_command_never_executes(tmp_path):
+    result = agent.dispatch_tool(
+        "run_command",
+        {"command": "python -c \"open('proof.txt','w').write('ran')\""},
+        tmp_path,
+        confirm=lambda description, preview: False,
+    )
+
+    assert result == "User declined the change."
+    assert not (tmp_path / "proof.txt").exists()
+
+
+def test_approved_run_command_executes(tmp_path):
+    (tmp_path / "ok.py").write_text("print('ran fine')", encoding="utf-8")
+    seen = {}
+
+    def confirm(description, preview):
+        seen["description"] = description
+        return True
+
+    result = agent.dispatch_tool(
+        "run_command", {"command": "python ok.py"}, tmp_path, confirm=confirm
+    )
+
+    assert "exit code 0" in result and "ran fine" in result
+    assert seen["description"] == "run: python ok.py"
+
+
+def test_run_command_without_channel_is_declined(tmp_path):
+    result = agent.dispatch_tool(
+        "run_command", {"command": "python -c pass"}, tmp_path, confirm=None
+    )
+    assert "No confirmation channel" in result
+
+
+def test_write_file_routes_through_the_gate(tmp_path):
+    declined = agent.dispatch_tool(
+        "write_file",
+        {"path": "new.py", "content": "x = 1\n"},
+        tmp_path,
+        confirm=lambda description, preview: False,
+    )
+    assert declined == "User declined the change."
+    assert not (tmp_path / "new.py").exists()
+
+    approved = agent.dispatch_tool(
+        "write_file",
+        {"path": "new.py", "content": "x = 1\n"},
+        tmp_path,
+        confirm=lambda description, preview: True,
+    )
+    assert "Applied:" in approved
+    assert (tmp_path / "new.py").read_text() == "x = 1\n"
+
+
 def test_read_tools_never_ask(tmp_path):
     (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
 

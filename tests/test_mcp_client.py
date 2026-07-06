@@ -28,8 +28,27 @@ def test_to_ollama_schema_namespaces_by_server():
 def test_allowlist_filters_discovered_tools():
     config = {"tools": ["git_status"]}
     tools = [_tool("git_status"), _tool("git_reset_hard")]
-    kept = mcp_client.allowed_tools(config, tools)
+    kept = mcp_client.allowed_tools("git", config, tools)
     assert [t.name for t in kept] == ["git_status"]
+
+
+def test_allowlist_matches_namespaced_names():
+    # The config allowlists what the model sees ("notes_search"), which must
+    # match a server tool named just "search".
+    config = {"tools": ["notes_search"]}
+    kept = mcp_client.allowed_tools("notes", config, [_tool("search"), _tool("drop")])
+    assert [t.name for t in kept] == ["search"]
+
+
+def test_load_config_bad_json_raises(tmp_path):
+    bad = tmp_path / "mcp.json"
+    bad.write_text("{not json", encoding="utf-8")
+    try:
+        mcp_client.load_config(bad)
+    except json.JSONDecodeError:
+        pass  # a syntax error must be loud (start_mcp catches and degrades)
+    else:
+        raise AssertionError("expected JSONDecodeError")
 
 
 class _FakeSession:
@@ -75,6 +94,21 @@ def test_call_routes_to_owning_session_and_strips_namespace():
 
     assert result == "found it"
     assert session.calls == [("search", {"q": "x"})]
+    manager.stop()
+
+
+def test_start_populates_confirm_gate_from_config():
+    config = {
+        "servers": {
+            "git": {"tools": ["git_status", "git_commit"], "confirm": ["git_commit"]}
+        }
+    }
+    session = _FakeSession([_tool("git_status"), _tool("git_commit")], {})
+    manager = _manager(config, {"git": session})
+    manager.start()
+
+    assert manager.needs_confirm("git_commit")
+    assert not manager.needs_confirm("git_status")
     manager.stop()
 
 

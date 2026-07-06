@@ -595,13 +595,14 @@ def _tokenize(text: str) -> list[str]:
 # so the docs and code manifests never share cache entries; the mtime check
 # makes a fresh ingest visible without restarting chat.
 _manifest_cache: dict[str, Any] = {}
-_warned_no_manifest = False
 
 
 def _cache_entry(manifest_path: Path) -> dict[str, Any]:
     key = str(manifest_path)
     if key not in _manifest_cache:
-        _manifest_cache[key] = {"mtime": None, "records": [], "bm25": {}}
+        _manifest_cache[key] = {
+            "mtime": None, "records": [], "bm25": {}, "warned": False
+        }
     return _manifest_cache[key]
 
 
@@ -704,11 +705,17 @@ def _retrieve_hybrid_slow(
     vector_results: dict[str, Any],
     where: dict[str, str] | None,
     n_results: int,
+    manifest_path: Path,
 ) -> dict[str, Any]:
-    global _warned_no_manifest
-    if not _warned_no_manifest:
-        print("(no manifest - falling back to slow per-query BM25; re-run ingest to fix)")
-        _warned_no_manifest = True
+    # Warn once per manifest, not once per process: a missing code manifest
+    # must still get its own warning after the docs one already fired.
+    entry = _cache_entry(manifest_path)
+    if not entry["warned"]:
+        print(
+            f"(no manifest at {manifest_path} - falling back to slow "
+            "per-query BM25; re-run ingest to fix)"
+        )
+        entry["warned"] = True
 
     corpus = collection.get(where=where, include=["documents", "metadatas"])
 
@@ -791,7 +798,7 @@ def retrieve(
 
     if cached is None:
         return _retrieve_hybrid_slow(
-            question, collection, vector_results, where, n_results
+            question, collection, vector_results, where, n_results, manifest_path
         )
 
     bm25, manifest_ids = cached

@@ -76,3 +76,45 @@ def test_chunk_label_shows_start_line_for_code():
 def test_help_and_completion_mention_code():
     assert "/code" in ask.HELP_TEXT
     assert "/code" in ui.COMMANDS
+
+
+def _code_results(distance=0.1):
+    return {
+        "documents": [["src/rag.py > retrieve\n\ndef retrieve(): ..."]],
+        "metadatas": [[{"path": "src/rag.py", "start_line": 478, "heading": "h"}]],
+        "distances": [[distance]],
+        "keyword_hits": [[False]],
+    }
+
+
+def test_answer_code_question_targets_the_code_collection(monkeypatch):
+    recorded = {}
+
+    def fake_retrieve(question, **kwargs):
+        recorded.update(kwargs)
+        return _code_results()
+
+    prompts = {}
+
+    def fake_ask_model(prompt, on_token=None):
+        prompts["p"] = prompt
+        return "answer [1]"
+
+    monkeypatch.setattr(rag, "retrieve", fake_retrieve)
+    monkeypatch.setattr(rag, "ask_model", fake_ask_model)
+
+    answer, metadatas = rag.answer_code_question("how does retrieve work?")
+
+    assert recorded["collection_name"] == rag.CODE_COLLECTION_NAME
+    assert recorded["manifest_path"] == rag.CODE_MANIFEST_PATH
+    assert rag.CODE_PROMPT_RULES.splitlines()[0] in prompts["p"]
+    assert metadatas[0]["start_line"] == 478
+
+
+def test_answer_code_question_refuses_far_matches(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(rag, "retrieve", lambda question, **kwargs: _code_results(distance=1.9))
+
+    with pytest.raises(NoRelevantDocsError):
+        rag.answer_code_question("what is the meaning of life?")

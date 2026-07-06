@@ -177,7 +177,7 @@ def run_command(root: Path, command: str, timeout: int = 120) -> str:
     try:
         argv = shlex.split(command)
     except ValueError as error:
-        return f"Command not allowed: {error}"
+        return f"Could not parse command: {error}"
 
     if not argv or Path(argv[0]).name not in ALLOWED_COMMANDS:
         allowed = ", ".join(sorted(ALLOWED_COMMANDS))
@@ -187,8 +187,11 @@ def run_command(root: Path, command: str, timeout: int = 120) -> str:
         completed = subprocess.run(
             argv, cwd=root, capture_output=True, text=True, timeout=timeout
         )
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after {timeout}s: {command}"
+    except subprocess.TimeoutExpired as error:
+        # The partial output usually explains WHY it hung (e.g. which test).
+        partial = (error.stdout or "") if isinstance(error.stdout, str) else ""
+        tail = f"\n{partial[-1000:]}" if partial else ""
+        return f"Command timed out after {timeout}s: {command}{tail}"
     except OSError as error:
         return f"Command failed to start: {error}"
 
