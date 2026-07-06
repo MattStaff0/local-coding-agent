@@ -28,5 +28,5 @@ package-dir = { "" = "src" }
 py-modules = [
     "agent", "agent_tools", "ask", "code_chunker", "eval_retrieval",
     "fetch_docs", "ingest", "ingest_code", "manifest", "mcp_client",
-    "paths", "rag", "ui",
+    "paths", "rag", "rerank", "ui",
 ]

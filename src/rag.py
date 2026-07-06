@@ -9,6 +9,7 @@ import chromadb.errors
 import httpx
 import manifest as manifest_module
 import ollama
+import rerank
 from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
 from rank_bm25 import BM25Okapi
 
@@ -806,9 +807,14 @@ def retrieve(
     bm25_ids = _bm25_rank_ids(question, bm25, manifest_ids)
 
     fused = _rrf_scores([vector_ids, bm25_ids])
-    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+    ranked_ids = sorted(fused, key=fused.get, reverse=True)
 
-    fetched = collection.get(ids=top_ids, include=["documents", "metadatas"])
+    # Reranking (opt-in) rescores the whole fused pool for precision; with it
+    # off, only the final top-k is ever fetched — today's exact behavior.
+    reranking = rerank.enabled()
+    candidate_ids = ranked_ids if reranking else ranked_ids[:n_results]
+
+    fetched = collection.get(ids=candidate_ids, include=["documents", "metadatas"])
     by_id = {
         item_id: (document, metadata)
         for item_id, document, metadata in zip(
@@ -817,7 +823,17 @@ def retrieve(
     }
     # A manifest id can be stale for the few seconds between a collection
     # delete and the post-ingest manifest rebuild; drop ids Chroma no longer has.
-    top_ids = [item_id for item_id in top_ids if item_id in by_id]
+    candidate_ids = [item_id for item_id in candidate_ids if item_id in by_id]
+
+    if reranking:
+        top_ids = rerank.rerank(
+            question,
+            candidate_ids,
+            [by_id[item_id][0] for item_id in candidate_ids],
+            n_results,
+        )
+    else:
+        top_ids = candidate_ids
 
     # Distances stay honest: measured vector distances where known, the
     # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword

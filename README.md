@@ -73,6 +73,8 @@ local-ai-coding-agent/
 | `RAG_MANIFEST_PATH` | `manifest.jsonl` | Path to the generated JSONL chunk manifest used for BM25 retrieval |
 | `STUDY_NOTES_DIR` | `study-notes` | Where `/export` writes study notes (point it at your vault) |
 | `LCA_HOME` | project directory | Overrides where the docs, index, and chat history live (`src/paths.py`) |
+| `RAG_RERANKER` | off | Set to `cross-encoder` to rerank the hybrid pool with a local cross-encoder (needs `pip install sentence-transformers`) |
+| `RAG_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Which cross-encoder the reranker loads |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Point at a remote Ollama, e.g. the PC from the MacBook: `OLLAMA_HOST=http://192.168.x.x:11434` |
 
 ## What Each Python File Does
@@ -210,6 +212,18 @@ pytorch:
   - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
 python:
   - https://docs.python.org/3/tutorial/datastructures.html
+```
+
+A source can also crawl a doc section instead of hand-listing every page:
+point `crawl` at the section's index page and its links under that prefix
+are fetched too (depth-1, capped, with a polite delay between downloads):
+
+```yaml
+sklearn:
+  crawl: https://scikit-learn.org/stable/modules/
+  max_pages: 30     # cap, index page included (default 30)
+  delay: 1.0        # seconds between downloads (default 1.0)
+  pages: []         # optional extra hand-picked URLs
 ```
 
 Fetch everything in the registry (or just one source by name):
@@ -404,12 +418,27 @@ Reingest after:
 - changing chunk size
 - changing embedding model
 
+## Optional: Cross-Encoder Reranking
+
+Hybrid retrieval is tuned for recall; an optional local cross-encoder adds
+precision by rescoring the whole fused candidate pool before the final
+top-k cut. It is off by default so baseline behavior and eval numbers never
+change:
+
+```bash
+pip install sentence-transformers   # not in requirements.txt (pulls torch)
+RAG_RERANKER=cross-encoder python src/ask.py "How do DataLoaders batch?"
+RAG_RERANKER=cross-encoder python src/eval_retrieval.py   # prove it helps
+```
+
+If the model is missing the reranker warns once and keeps the fusion order —
+it degrades precision, never availability.
+
 ## Near-Term Next Steps
 
 Good next improvements:
 
 1. Add more official docs slowly (grow `sources.yaml`).
-2. Add repo indexing for local source code (see the code-indexing options doc).
-3. Connect MCP servers to the agent loop (see the MCP options doc in the vault).
-4. Add a local cross-encoder reranker on top of hybrid retrieval.
-5. Crawl mode for the scraper (fetch everything under a URL prefix, politely).
+2. Compare a code-tuned embedder (CodeRankEmbed) vs nomic-embed-text with
+   `eval_retrieval.py --code`.
+3. Measure the reranker on the PC (`RAG_RERANKER=cross-encoder` before/after).
