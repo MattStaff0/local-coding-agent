@@ -4,11 +4,16 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+# paths must be imported before ollama: importing paths loads .env, and
+# importing ollama builds its default client, which captures OLLAMA_HOST.
+from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
+
 import chromadb
 import chromadb.errors
 import httpx
 import manifest as manifest_module
 import ollama
+import rerank
 from rank_bm25 import BM25Okapi
 
 
@@ -24,10 +29,11 @@ class NoRelevantDocsError(RuntimeError):
 # Keeping them here makes rag.py the source of truth for model/database settings.
 # The model names read the environment first so switching models (3B on the
 # laptop, 12B on the PC) never needs a code edit.
-DOCS_DIR = Path("docs")
-DB_DIR = "chroma_db"
-MANIFEST_PATH = Path(os.getenv("RAG_MANIFEST_PATH", "manifest.jsonl"))
 COLLECTION_NAME = "local_docs"
+CODE_COLLECTION_NAME = "local_code"
+CODE_MANIFEST_PATH = Path(
+    os.getenv("RAG_CODE_MANIFEST_PATH", PROJECT_ROOT / "code-manifest.jsonl")
+)
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_HISTORY_TURNS = 6
@@ -454,6 +460,93 @@ def index_docs(docs_dir: Path = DOCS_DIR, full: bool = False) -> int:
     return added
 
 
+def index_code(repo_dir: Path, repo_name: str | None = None, full: bool = False) -> int:
+    """Embed one repo's Python files into the local_code collection.
+
+    Incremental exactly like index_docs: per-file content hashes skip
+    unchanged files, deleted files drop their records. Deletions are scoped
+    to this repo's source name so multiple indexed repos coexist.
+    """
+    # Imported lazily: code_chunker imports chunk_text from this module.
+    from agent_tools import SKIP_DIRS
+    from code_chunker import chunk_python
+
+    repo_dir = Path(repo_dir)
+    source = repo_name or repo_dir.name
+
+    py_files = sorted(
+        path
+        for path in repo_dir.rglob("*.py")
+        if not any(part in SKIP_DIRS for part in path.relative_to(repo_dir).parts)
+        and not path.is_symlink()
+    )
+
+    collection = get_client().get_or_create_collection(
+        name=CODE_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+    )
+
+    records = collection.get(where={"source": source}, include=["metadatas"])
+    stored_hashes = {
+        metadata["relative_path"]: metadata.get("file_hash", "")
+        for metadata in records["metadatas"]
+    }
+
+    def delete_file_records(relative_path: str) -> None:
+        collection.delete(
+            where={"$and": [{"source": source}, {"relative_path": relative_path}]}
+        )
+
+    on_disk = {path.relative_to(repo_dir).as_posix() for path in py_files}
+    for relative_path in stored_hashes:
+        if relative_path not in on_disk:
+            print(f"Removing indexed chunks for deleted {relative_path}")
+            delete_file_records(relative_path)
+
+    added = 0
+
+    for py_file in py_files:
+        text = py_file.read_text(encoding="utf-8", errors="replace")
+        relative_path = py_file.relative_to(repo_dir).as_posix()
+        digest = _file_hash(text)
+
+        if not full and stored_hashes.get(relative_path) == digest:
+            continue
+
+        chunks = chunk_python(text, relative_path)
+
+        # Replace, not append: the old version may have had more chunks.
+        delete_file_records(relative_path)
+
+        if not chunks:
+            continue
+
+        print(f"Processing {relative_path}: {len(chunks)} chunks")
+        embeddings = embed_batch([chunk["text"] for chunk in chunks])
+        safe_path = relative_path.replace("/", "__")
+
+        collection.add(
+            ids=[f"{source}__{safe_path}-{i}" for i in range(len(chunks))],
+            documents=[chunk["text"] for chunk in chunks],
+            embeddings=embeddings,
+            metadatas=[
+                {
+                    "source": source,
+                    "path": str(py_file),
+                    "relative_path": relative_path,
+                    "heading": chunk["heading"],
+                    "start_line": chunk["start_line"],
+                    "chunk_index": i,
+                    "file_hash": digest,
+                }
+                for i, chunk in enumerate(chunks)
+            ],
+        )
+        added += len(chunks)
+
+    rebuild_manifest(collection, CODE_MANIFEST_PATH)
+    return added
+
+
 def rebuild_manifest(collection, path: Path | None = None) -> int:
     """Regenerate the manifest from the collection after ingest.
 
@@ -502,31 +595,45 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
-# Loaded once per process and reused across queries; the mtime check makes a
-# fresh ingest visible without restarting chat.
-_manifest_cache: dict[str, Any] = {"mtime": None, "records": [], "bm25": {}}
-_warned_no_manifest = False
+# Loaded once per process and reused across queries, keyed by manifest path
+# so the docs and code manifests never share cache entries; the mtime check
+# makes a fresh ingest visible without restarting chat.
+_manifest_cache: dict[str, Any] = {}
 
 
-def _load_manifest_cached() -> list[dict[str, Any]]:
+def _cache_entry(manifest_path: Path) -> dict[str, Any]:
+    key = str(manifest_path)
+    if key not in _manifest_cache:
+        _manifest_cache[key] = {
+            "mtime": None, "records": [], "bm25": {}, "warned": False
+        }
+    return _manifest_cache[key]
+
+
+def _load_manifest_cached(manifest_path: Path) -> list[dict[str, Any]]:
+    entry = _cache_entry(manifest_path)
+
     try:
-        mtime = MANIFEST_PATH.stat().st_mtime_ns
+        mtime = manifest_path.stat().st_mtime_ns
     except FileNotFoundError:
-        _manifest_cache.update(mtime=None, records=[], bm25={})
+        entry.update(mtime=None, records=[], bm25={})
         return []
 
-    if _manifest_cache["mtime"] != mtime:
-        _manifest_cache.update(
+    if entry["mtime"] != mtime:
+        entry.update(
             mtime=mtime,
-            records=manifest_module.load_manifest(MANIFEST_PATH),
+            records=manifest_module.load_manifest(manifest_path),
             bm25={},
         )
 
-    return _manifest_cache["records"]
+    return entry["records"]
 
 
-def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
-    records = _load_manifest_cached()
+def _bm25_for_source(
+    source: str | None, manifest_path: Path | None = None
+) -> tuple[BM25Okapi, list[str]] | None:
+    manifest_path = manifest_path if manifest_path is not None else MANIFEST_PATH
+    records = _load_manifest_cached(manifest_path)
     subset = [
         record
         for record in records
@@ -536,14 +643,15 @@ def _bm25_for_source(source: str | None) -> tuple[BM25Okapi, list[str]] | None:
     if not subset:
         return None
 
+    entry = _cache_entry(manifest_path)
     key = source or ""
-    if key not in _manifest_cache["bm25"]:
-        _manifest_cache["bm25"][key] = (
+    if key not in entry["bm25"]:
+        entry["bm25"][key] = (
             BM25Okapi([record["tokens"] for record in subset]),
             [record["id"] for record in subset],
         )
 
-    return _manifest_cache["bm25"][key]
+    return entry["bm25"][key]
 
 
 def _bm25_rank_ids(question: str, bm25: BM25Okapi, ids: list[str]) -> list[str]:
@@ -601,11 +709,17 @@ def _retrieve_hybrid_slow(
     vector_results: dict[str, Any],
     where: dict[str, str] | None,
     n_results: int,
+    manifest_path: Path,
 ) -> dict[str, Any]:
-    global _warned_no_manifest
-    if not _warned_no_manifest:
-        print("(no manifest - falling back to slow per-query BM25; re-run ingest to fix)")
-        _warned_no_manifest = True
+    # Warn once per manifest, not once per process: a missing code manifest
+    # must still get its own warning after the docs one already fired.
+    entry = _cache_entry(manifest_path)
+    if not entry["warned"]:
+        print(
+            f"(no manifest at {manifest_path} - falling back to slow "
+            "per-query BM25; re-run ingest to fix)"
+        )
+        entry["warned"] = True
 
     corpus = collection.get(where=where, include=["documents", "metadatas"])
 
@@ -646,19 +760,30 @@ def retrieve(
     n_results: int = 4,
     source: str | None = None,
     mode: str = "hybrid",
+    collection_name: str = COLLECTION_NAME,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Find the most relevant indexed doc chunks for a user question.
+    """Find the most relevant indexed chunks for a user question.
 
-    Pass a source name (a top-level docs/ folder) to search only that source.
-    The default hybrid mode fuses vector and BM25 keyword rankings with RRF —
-    embeddings catch paraphrases, BM25 catches exact identifiers; pass
-    mode="vector" for pure semantic search.
+    Pass a source name (a top-level docs/ folder, or a repo name for code)
+    to search only that source. The default hybrid mode fuses vector and
+    BM25 keyword rankings with RRF — embeddings catch paraphrases, BM25
+    catches exact identifiers; pass mode="vector" for pure semantic search.
+    The docs defaults keep every existing caller unchanged; pass
+    collection_name/manifest_path to search the code index instead.
     """
     if mode not in ("hybrid", "vector"):
         raise ValueError(f"Unknown retrieval mode '{mode}'; use 'hybrid' or 'vector'.")
 
+    if manifest_path is None:
+        manifest_path = (
+            CODE_MANIFEST_PATH
+            if collection_name == CODE_COLLECTION_NAME
+            else MANIFEST_PATH
+        )
+
     client = get_client()
-    collection = client.get_collection(name=COLLECTION_NAME)
+    collection = client.get_collection(name=collection_name)
     where = {"source": source} if source else None
 
     # The question has to be embedded with the same model used for the docs.
@@ -673,11 +798,11 @@ def retrieve(
     if mode != "hybrid":
         return vector_results
 
-    cached = _bm25_for_source(source)
+    cached = _bm25_for_source(source, manifest_path)
 
     if cached is None:
         return _retrieve_hybrid_slow(
-            question, collection, vector_results, where, n_results
+            question, collection, vector_results, where, n_results, manifest_path
         )
 
     bm25, manifest_ids = cached
@@ -685,9 +810,14 @@ def retrieve(
     bm25_ids = _bm25_rank_ids(question, bm25, manifest_ids)
 
     fused = _rrf_scores([vector_ids, bm25_ids])
-    top_ids = sorted(fused, key=fused.get, reverse=True)[:n_results]
+    ranked_ids = sorted(fused, key=fused.get, reverse=True)
 
-    fetched = collection.get(ids=top_ids, include=["documents", "metadatas"])
+    # Reranking (opt-in) rescores the whole fused pool for precision; with it
+    # off, only the final top-k is ever fetched — today's exact behavior.
+    reranking = rerank.enabled()
+    candidate_ids = ranked_ids if reranking else ranked_ids[:n_results]
+
+    fetched = collection.get(ids=candidate_ids, include=["documents", "metadatas"])
     by_id = {
         item_id: (document, metadata)
         for item_id, document, metadata in zip(
@@ -696,7 +826,17 @@ def retrieve(
     }
     # A manifest id can be stale for the few seconds between a collection
     # delete and the post-ingest manifest rebuild; drop ids Chroma no longer has.
-    top_ids = [item_id for item_id in top_ids if item_id in by_id]
+    candidate_ids = [item_id for item_id in candidate_ids if item_id in by_id]
+
+    if reranking:
+        top_ids = rerank.rerank(
+            question,
+            candidate_ids,
+            [by_id[item_id][0] for item_id in candidate_ids],
+            n_results,
+        )
+    else:
+        top_ids = candidate_ids
 
     # Distances stay honest: measured vector distances where known, the
     # cosine maximum (2.0) where a BM25-only hit was never measured. Keyword
@@ -715,10 +855,10 @@ def retrieve(
     }
 
 
-def list_sources() -> list[str]:
+def list_sources(collection_name: str = COLLECTION_NAME) -> list[str]:
     """List the source names currently present in the index."""
     client = get_client()
-    collection = client.get_collection(name=COLLECTION_NAME)
+    collection = client.get_collection(name=collection_name)
 
     records = collection.get(include=["metadatas"])
 
@@ -741,9 +881,16 @@ def format_history(history: list[dict[str, str]]) -> str:
 
 
 def chunk_label(number: int, metadata: dict[str, Any]) -> str:
-    """Label one retrieved chunk, like '[1] docs/pytorch/tensors.md § Tensors'."""
+    """Label one retrieved chunk, like '[1] docs/pytorch/tensors.md § Tensors'.
+
+    Code chunks carry a start_line, shown as path:line so a citation points
+    at a jumpable location.
+    """
     path = metadata.get("path", metadata.get("source", "unknown"))
     heading = metadata.get("heading", "")
+
+    if "start_line" in metadata:
+        path = f"{path}:{metadata['start_line']}"
 
     label = f"[{number}] {path}"
     if heading:
@@ -797,20 +944,7 @@ def budget_chunks(
     return kept_docs, kept_metadatas
 
 
-def build_prompt(
-    question: str,
-    context_chunks: list[str],
-    history: list[dict[str, str]] | None = None,
-    metadatas: list[dict[str, Any]] | None = None,
-) -> str:
-    """Build the full prompt sent to the chat model."""
-    context = format_context(context_chunks, metadatas)
-    history_text = format_history(history or [])
-
-    # This is where RAG happens: retrieved docs are inserted into the prompt.
-    # The rules force doc-grounded answers: a small local model should teach
-    # from the retrieved documentation, never from its own training data.
-    return f"""
+DOCS_PROMPT_RULES = """\
 You are a local coding tutor. Answer the user's question using ONLY the numbered documentation context below.
 
 Rules:
@@ -819,7 +953,31 @@ Rules:
 - If the context does not fully answer the question, say exactly what is missing or not covered, and do not guess.
 - Be clear and practical.
 - Include code examples when the context contains them.
-- Use the conversation history only to understand follow-up questions.
+- Use the conversation history only to understand follow-up questions."""
+
+CODE_PROMPT_RULES = """\
+You are a local coding tutor. Answer using ONLY the numbered code context.
+Cite like [1] and include the path and start line, e.g. (src/rag.py:478).
+If the context does not contain the answer, say what is missing. Never
+invent code that is not in the context."""
+
+
+def build_prompt(
+    question: str,
+    context_chunks: list[str],
+    history: list[dict[str, str]] | None = None,
+    metadatas: list[dict[str, Any]] | None = None,
+    rules: str = DOCS_PROMPT_RULES,
+) -> str:
+    """Build the full prompt sent to the chat model."""
+    context = format_context(context_chunks, metadatas)
+    history_text = format_history(history or [])
+
+    # This is where RAG happens: retrieved docs are inserted into the prompt.
+    # The rules force grounded answers: a small local model should teach
+    # from the retrieved context, never from its own training data.
+    return f"""
+{rules}
 
 Conversation history:
 {history_text}
@@ -962,6 +1120,55 @@ def answer_question(
     if problems:
         # Warn-only by design: a wrong warning costs a glance, an automatic
         # rerun costs a full 12B generation.
+        print(f"\n(grounding warning: {'; '.join(problems)})")
+
+    return answer, kept_metadatas
+
+
+def answer_code_question(
+    question: str,
+    history: list[dict[str, str]] | None = None,
+    repo: str | None = None,
+    on_token: Callable[[str], None] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """answer_question's flow pointed at the code index instead of the docs."""
+    search_query = rewrite_query(question, history) if history else question
+    results = retrieve(
+        search_query,
+        source=repo,
+        collection_name=CODE_COLLECTION_NAME,
+        manifest_path=CODE_MANIFEST_PATH,
+    )
+
+    docs = results["documents"][0]
+    metadatas = results["metadatas"][0]
+
+    if not docs:
+        raise EmptyIndexError(
+            "Retrieval returned no code chunks — index a repo first with "
+            "'python src/ingest_code.py <repo-path>'."
+        )
+
+    if would_refuse(results):
+        raise NoRelevantDocsError(
+            "Nothing relevant is indexed for that question in the code "
+            "index — re-run 'python src/ingest_code.py' after code changes."
+        )
+
+    kept_docs, kept_metadatas = budget_chunks(docs, metadatas)
+    if len(kept_docs) < len(docs):
+        print(
+            f"(context trimmed to {len(kept_docs)} of {len(docs)} chunks "
+            "to fit the prompt budget)"
+        )
+
+    prompt = build_prompt(
+        question, kept_docs, history or [], kept_metadatas, rules=CODE_PROMPT_RULES
+    )
+    answer = ask_model(prompt, on_token=on_token)
+
+    problems = citation_problems(answer, len(kept_docs))
+    if problems:
         print(f"\n(grounding warning: {'; '.join(problems)})")
 
     return answer, kept_metadatas

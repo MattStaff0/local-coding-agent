@@ -64,6 +64,11 @@ local-ai-coding-agent/
 
 ## Configuration (environment variables)
 
+All of these can live in a `.env` file at the repo root — copy `.env.example`
+to `.env` and edit. It is loaded automatically on startup (before the Ollama
+client is created, so `OLLAMA_HOST` works from it), it is gitignored, and a
+variable already exported in your shell always beats the file.
+
 | Variable | Default | Effect |
 |---|---|---|
 | `OLLAMA_CHAT_MODEL` | `qwen2.5-coder:3b` | Chat + agent model (switch 3B ↔ 12B without code edits) |
@@ -72,6 +77,10 @@ local-ai-coding-agent/
 | `RAG_PROMPT_BUDGET` | `12000` | Character budget for retrieved documentation context in the prompt |
 | `RAG_MANIFEST_PATH` | `manifest.jsonl` | Path to the generated JSONL chunk manifest used for BM25 retrieval |
 | `STUDY_NOTES_DIR` | `study-notes` | Where `/export` writes study notes (point it at your vault) |
+| `LCA_HOME` | project directory | Overrides where the docs, index, and chat history live (`src/paths.py`) |
+| `RAG_RERANKER` | off | Set to `cross-encoder` to rerank the hybrid pool with a local cross-encoder (needs `pip install sentence-transformers`) |
+| `RAG_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Which cross-encoder the reranker loads |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Point at a remote Ollama, e.g. the PC from the MacBook: `OLLAMA_HOST=http://192.168.x.x:11434` |
 
 ## What Each Python File Does
 
@@ -97,7 +106,10 @@ local-ai-coding-agent/
 `src/ask.py` is the terminal interface:
 
 - starts an interactive chat if no question is passed
-- streams answers token-by-token
+- streams answers token-by-token, live-rendered as markdown with
+  syntax-highlighted code blocks on a real terminal (plain text when piped)
+- prompt has up-arrow history and tab-completion for slash commands
+  (`/help` lists them all)
 - persists chat history across sessions (`chat_history.json`)
 - prints a citation legend mapping each `[n]` in the answer to `file § heading`
 - supports `/sources` and `/source <name>` to scope answers to one source
@@ -109,6 +121,12 @@ local-ai-coding-agent/
 - the model drives sandboxed `list_files` / `grep` / `read_file` tools in a
   loop with guardrails (iteration cap, repeated-call breaker, output caps)
 - run it directly: `python src/agent.py "where is the similarity search?"`
+- see the "Agent v2" section below for sessions, edits, and MCP
+
+`src/mcp_client.py` is the hand-rolled MCP client:
+
+- reads `mcp.json`, connects each server over stdio on a background asyncio
+  thread, and exposes synchronous `owns()` / `call()` to the agent loop
 
 `src/eval_retrieval.py` measures retrieval quality:
 
@@ -159,6 +177,23 @@ Install Python dependencies:
 pip install -r requirements.txt
 ```
 
+### Install the `lca` command
+
+An editable install adds an `lca` console command that works from any
+directory — data paths (docs, index, chat history) always resolve to this
+project via `src/paths.py`, so running `lca` from another folder never
+creates a stray `chroma_db/` there:
+
+```bash
+pip install -e .
+lca                      # interactive chat from anywhere
+lca "How do RNNs work?"  # one-shot question
+```
+
+Packaging note: the project installs the flat `src/*.py` modules top-level
+(`rag`, `ask`, `ui`, …) rather than as a package — renaming to a package
+would churn every import in the repo for zero behavior change.
+
 Install Ollama from:
 
 ```text
@@ -182,6 +217,18 @@ pytorch:
   - https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html
 python:
   - https://docs.python.org/3/tutorial/datastructures.html
+```
+
+A source can also crawl a doc section instead of hand-listing every page:
+point `crawl` at the section's index page and its links under that prefix
+are fetched too (depth-1, capped, with a polite delay between downloads):
+
+```yaml
+sklearn:
+  crawl: https://scikit-learn.org/stable/modules/
+  max_pages: 30     # cap, index page included (default 30)
+  delay: 1.0        # seconds between downloads (default 1.0)
+  pages: []         # optional extra hand-picked URLs
 ```
 
 Fetch everything in the registry (or just one source by name):
@@ -249,18 +296,18 @@ What does the forward method do?
 How do Python lists work?
 ```
 
-Scope answers to one documentation source (a top-level `docs/` folder):
+On a real terminal the answer streams as live-rendered markdown (headings,
+tables, syntax-highlighted code), the prompt supports up-arrow history and
+tab-completion, and a spinner shows while retrieval runs. Piped output stays
+plain text. `/help` lists all commands:
 
 ```text
-/sources          list indexed sources
-/source pytorch   answer only from docs/pytorch/
-/source all       search everything again
-```
-
-Exit chat:
-
-```text
-/exit
+/help             show this help
+/sources          list indexed doc sources
+/source <name>    answer only from one source (/source all to reset)
+/agent <question> search this codebase live with tools
+/export           save the last answer as a study note
+/exit             quit
 ```
 
 You can also ask one question directly:
@@ -272,6 +319,82 @@ python src/ask.py "How do I create a neural network in PyTorch?"
 Answers are checked after generation for citation shape. If the model omits
 `[n]` citations or cites a chunk number that was not sent in the prompt, the
 CLI prints a grounding warning but does not rerun or reject the answer.
+
+## Agent v2: Sessions, Edits, MCP
+
+`/agent` conversations are now persistent within a chat session — follow-up
+`/agent` questions remember earlier ones. Subcommands:
+
+```text
+/agent <question>     ask (continues the current session)
+/agent                show current root and message count
+/agent reset          clear the session
+/agent root <path>    point the agent at another repo (starts a fresh session)
+```
+
+The agent can also propose file edits (`edit_file`, `write_file`) and run
+allowlisted commands (`run_command`: only `pytest` and `python`). Every
+write or run shows a unified diff (or the command line) and asks
+`Apply? [y/N]` first — declining is an answer the model sees, not an error:
+
+```text
+edit_file src/rag.py
+--- a/src/rag.py
++++ b/src/rag.py
+@@ ...
+Apply? [y/N]:
+```
+
+### MCP servers (`mcp.json`)
+
+External tools come from MCP servers declared in `mcp.json` at the project
+root (requires [`uvx`](https://docs.astral.sh/uv/)); servers start lazily on
+the first `/agent` call:
+
+```json
+{
+  "servers": {
+    "git":   {"command": "uvx", "args": ["mcp-server-git", "--repository", "."],
+              "tools": ["git_status", "git_diff_unstaged", "git_log"]},
+    "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "tools": ["fetch"]}
+  }
+}
+```
+
+To add a server: add an entry with its launch command and a `"tools"`
+allowlist (tool names are namespaced `server_tool`). An optional
+`"confirm": [...]` list routes specific tools through the y/N gate. Keep the
+total loadout at 8 tools or fewer — small local models degrade sharply when
+choosing between more, and the CLI warns when a config exceeds it.
+
+## Code Indexing (`/code`)
+
+Python repos index into a second Chroma collection (`local_code`) with an
+ast-based chunker: one chunk per top-level function/class (decorators and
+docstrings kept, oversized classes split per method), plus a module chunk
+for imports and constants. Docs and code share the same hybrid retrieval
+machinery but separate collections and manifests, so docs retrieval numbers
+are untouched.
+
+```bash
+python src/ingest_code.py .                                # index this repo
+python src/ingest_code.py ~/school/dl-project --name dl-project
+```
+
+Then in chat:
+
+```text
+/code where is the relevance cutoff applied?
+```
+
+Citations point at jumpable locations (`src/rag.py:478 § src/rag.py > retrieve`).
+Re-run `ingest_code.py` after code changes — it is incremental (content
+hashes), so unchanged files are never re-embedded. Score the code index with
+`python src/eval_retrieval.py --code` (golden set: `tests/golden_code.yaml`).
+
+Stretch experiment: compare `OLLAMA_EMBED_MODEL=nomic-embed-text` against a
+code-tuned embedder (e.g. CodeRankEmbed) with `eval_retrieval.py --code` on
+the PC — numbers decide, not vibes.
 
 ## Current Memory Behavior
 
@@ -300,12 +423,27 @@ Reingest after:
 - changing chunk size
 - changing embedding model
 
+## Optional: Cross-Encoder Reranking
+
+Hybrid retrieval is tuned for recall; an optional local cross-encoder adds
+precision by rescoring the whole fused candidate pool before the final
+top-k cut. It is off by default so baseline behavior and eval numbers never
+change:
+
+```bash
+pip install sentence-transformers   # not in requirements.txt (pulls torch)
+RAG_RERANKER=cross-encoder python src/ask.py "How do DataLoaders batch?"
+RAG_RERANKER=cross-encoder python src/eval_retrieval.py   # prove it helps
+```
+
+If the model is missing the reranker warns once and keeps the fusion order —
+it degrades precision, never availability.
+
 ## Near-Term Next Steps
 
 Good next improvements:
 
 1. Add more official docs slowly (grow `sources.yaml`).
-2. Add repo indexing for local source code (see the code-indexing options doc).
-3. Connect MCP servers to the agent loop (see the MCP options doc in the vault).
-4. Add a local cross-encoder reranker on top of hybrid retrieval.
-5. Crawl mode for the scraper (fetch everything under a URL prefix, politely).
+2. Compare a code-tuned embedder (CodeRankEmbed) vs nomic-embed-text with
+   `eval_retrieval.py --code`.
+3. Measure the reranker on the PC (`RAG_RERANKER=cross-encoder` before/after).

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-coding-agent"
+version = "0.1.0"
+description = "Local documentation-grounded RAG assistant and coding agent on Ollama"
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb",
+    "requests",
+    "beautifulsoup4",
+    "markdownify",
+    "ollama",
+    "pyyaml",
+    "rank_bm25",
+    "rich",
+    "prompt_toolkit",
+    "mcp",
+]
+
+[project.scripts]
+lca = "ask:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = [
+    "agent", "agent_tools", "ask", "code_chunker", "eval_retrieval",
+    "fetch_docs", "ingest", "ingest_code", "manifest", "mcp_client",
+    "paths", "rag", "rerank", "ui",
+]

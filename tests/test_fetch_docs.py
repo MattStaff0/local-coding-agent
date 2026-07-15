@@ -29,13 +29,12 @@ def test_load_sources_reads_source_names_and_urls(tmp_path: Path) -> None:
 
     sources = load_sources(registry)
 
-    assert sources == {
-        "pytorch": ["https://example.com/pytorch/basics.html"],
-        "python": [
-            "https://example.com/python/datastructures.html",
-            "https://example.com/python/functions.html",
-        ],
-    }
+    assert sources["pytorch"]["pages"] == ["https://example.com/pytorch/basics.html"]
+    assert sources["python"]["pages"] == [
+        "https://example.com/python/datastructures.html",
+        "https://example.com/python/functions.html",
+    ]
+    assert sources["pytorch"]["crawl"] is None
 
 
 def test_load_sources_rejects_missing_file(tmp_path: Path) -> None:
@@ -380,7 +379,10 @@ def test_main_exits_nonzero_when_pages_failed(
     monkeypatch.setattr(
         fetch_docs,
         "fetch_source",
-        lambda name, urls, docs_dir=None, max_age_days=None: ([], list(urls)),
+        lambda name, config, docs_dir=None, max_age_days=None: (
+            [],
+            list(config["pages"]),
+        ),
     )
 
     with pytest.raises(SystemExit) as excinfo:

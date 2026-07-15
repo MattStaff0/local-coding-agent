@@ -10,10 +10,14 @@ from typing import Any
 import chromadb.errors
 import httpx
 
-from agent import format_agent_reply, parse_agent_command, run_agent
+import mcp_client
+import paths
+import ui
+from agent import AgentSession, format_agent_reply, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
     NoRelevantDocsError,
+    answer_code_question,
     answer_question,
     list_sources,
     source_legend,
@@ -24,12 +28,12 @@ NO_INDEX_HINT = "No index found. Run 'python src/ingest.py' first."
 # Chat history persists across restarts; only the recent tail is saved so the
 # file cannot grow without bound (the prompt is capped separately by
 # rag.MAX_HISTORY_TURNS).
-HISTORY_FILE = Path("chat_history.json")
+HISTORY_FILE = paths.HISTORY_FILE
 MAX_SAVED_MESSAGES = 100
 
 # Where /export writes study notes. Point this at the Obsidian vault, e.g.
 # STUDY_NOTES_DIR="$HOME/Documents/matt-vault/study-notes".
-EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", "study-notes"))
+EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", paths.PROJECT_ROOT / "study-notes"))
 
 
 def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
@@ -135,12 +139,48 @@ def print_token(token: str) -> None:
     print(token, end="", flush=True)
 
 
-def print_sources(metadatas: list[dict[str, Any]]) -> None:
-    """Show the citation legend: which chunk each [n] in the answer refers to."""
-    print("\nSources:")
+def safe_list_sources() -> list[str]:
+    """Indexed source names for tab-completion; never crash the prompt."""
+    try:
+        return list_sources()
+    except chromadb.errors.NotFoundError:
+        return []  # no index yet — nothing to complete, not an error
+    except Exception as error:
+        print(f"(source completion disabled: {type(error).__name__}: {error})")
+        return []
 
-    for line in source_legend(metadatas):
-        print(f"  {line}")
+
+def start_mcp():
+    """Start MCP servers from mcp.json, once per chat process.
+
+    Returns None when nothing is configured or startup fails — the agent
+    then runs with native tools only, which is a degradation, not an error.
+    """
+    try:
+        config = mcp_client.load_config(paths.PROJECT_ROOT / "mcp.json")
+
+        if not config.get("servers"):
+            return None
+
+        manager = mcp_client.MCPManager(config)
+        manager.start()
+    except Exception as error:
+        # A typo in mcp.json must degrade to native tools, not kill the chat.
+        print(f"(mcp unavailable: {type(error).__name__}: {error})")
+        return None
+
+    return manager
+
+
+HELP_TEXT = """\
+Commands:
+  /help             show this help
+  /sources          list indexed doc sources
+  /source <name>    answer only from one source (/source all to reset)
+  /code <question>  answer from the indexed code (ingest_code.py first)
+  /agent <question> search this codebase live with tools
+  /export           save the last answer as a study note
+  /exit             quit"""
 
 
 def apply_source_command(
@@ -189,80 +229,174 @@ def apply_source_command(
     return False, active_source, ""
 
 
-def chat_loop() -> None:
+def chat_loop(renderer=None, read_input=None) -> None:
     """Run an interactive terminal chat with persistent memory."""
+    renderer = renderer or ui.make_renderer()
+    read_input = read_input or ui.make_input(safe_list_sources)
+
     # Pass the module globals explicitly: default arguments bind at def time,
     # which would ignore a HISTORY_FILE override (tests, future config).
     history = load_history(HISTORY_FILE)
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
+    agent_session: AgentSession | None = None
+    mcp_manager = None
+    mcp_started = False
 
-    print("Local RAG chat")
-    print("Type your question, or type /exit to quit.")
-    print("Scope answers with /sources, /source <name>, /source all.")
-    print("Search this codebase live with /agent <question>.")
-    print("Save the last answer as a study note with /export.")
+    renderer.show_message("Local RAG chat")
+    renderer.show_message("Type your question, /help for commands, /exit to quit.")
 
     if history:
-        print(f"(restored {len(history)} messages from {HISTORY_FILE})")
+        renderer.show_message(f"(restored {len(history)} messages from {HISTORY_FILE})")
 
     while True:
-        question = input("\nYou: ").strip()
+        prompt_text = f"[{active_source}] You: " if active_source else "You: "
+        question = read_input(prompt_text).strip()
 
         # Ignore blank lines so accidental Enter presses do not call the model.
         if not question:
             continue
 
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
-            print("Goodbye.")
+            if mcp_manager is not None:
+                mcp_manager.stop()
+            renderer.show_message("Goodbye.")
             return
+
+        if question == "/help":
+            renderer.show_message(HELP_TEXT)
+            continue
 
         if question == "/export":
             if last_export is None:
-                print("Nothing to export yet — ask a question first.")
+                renderer.show_message("Nothing to export yet — ask a question first.")
                 continue
 
             try:
                 path = export_note(*last_export, notes_dir=EXPORT_DIR)
             except OSError as error:
                 # A bad STUDY_NOTES_DIR must not kill the whole chat session.
-                print(f"Could not write the study note ({error}).")
+                renderer.show_error(f"Could not write the study note ({error}).")
                 continue
 
-            print(f"Saved study note: {path}")
+            renderer.show_message(f"Saved study note: {path}")
             continue
 
-        agent_question = parse_agent_command(question)
-        if agent_question is not None:
-            try:
-                answer, trace = run_agent(agent_question, root=Path.cwd())
-            except Exception as error:
-                print(f"\n{describe_error(error)}")
+        if question == "/code" or question.startswith("/code "):
+            code_question = question.removeprefix("/code").strip()
+
+            if not code_question:
+                renderer.show_message(
+                    "Usage: /code <question> — answers from the code index "
+                    "(build it with 'python src/ingest_code.py <repo-path>')."
+                )
                 continue
 
-            print("\n" + format_agent_reply(answer, trace))
+            try:
+                with renderer.status("thinking…"):
+                    answer, metadatas = answer_code_question(
+                        code_question, history, on_token=renderer.on_token
+                    )
+            except Exception as error:
+                renderer.show_error(describe_error(error))
+                continue
+
+            renderer.finish_answer()
+            renderer.show_sources(source_legend(metadatas))
+
+            history.append({"role": "user", "content": code_question})
+            history.append({"role": "assistant", "content": answer})
+            last_export = (code_question, answer, metadatas)
+
+            try:
+                save_history(history, HISTORY_FILE)
+            except OSError as error:
+                renderer.show_message(f"(could not save chat history: {error})")
+            continue
+
+        agent_command = parse_agent_command(question)
+        if agent_command is not None:
+            subcommand, argument = agent_command
+
+            if subcommand == "status":
+                if agent_session is None:
+                    renderer.show_message(
+                        "No agent session yet. Ask with /agent <question>."
+                    )
+                else:
+                    renderer.show_message(
+                        f"Agent root: {agent_session.root} "
+                        f"({len(agent_session.messages)} messages)"
+                    )
+                continue
+
+            if subcommand == "reset":
+                agent_session = None
+                renderer.show_message("Agent session cleared.")
+                continue
+
+            if subcommand == "root":
+                if not argument:
+                    renderer.show_error("Usage: /agent root <path>")
+                    continue
+                new_root = Path(argument).expanduser()
+                if not new_root.is_dir():
+                    renderer.show_error(f"No such directory: {argument}")
+                    continue
+                # Fresh session on purpose: old context describes the old
+                # repo, and carrying it over invites cross-repo hallucination.
+                agent_session = AgentSession(root=new_root)
+                renderer.show_message(f"Agent root set to {new_root} (fresh session).")
+                continue
+
+            if agent_session is None:
+                agent_session = AgentSession(root=Path.cwd())
+
+            if not mcp_started:
+                # One manager per chat process, started lazily so plain RAG
+                # chats never pay the server-spawn cost.
+                mcp_manager = start_mcp()
+                mcp_started = True
+
+            def confirm(description: str, preview: str) -> bool:
+                renderer.show_message(f"\n{description}")
+                if preview != description:
+                    renderer.show_message(preview)
+                return read_input("Apply? [y/N]: ").strip().lower() in {"y", "yes"}
+
+            try:
+                answer, trace = run_agent(
+                    argument,
+                    session=agent_session,
+                    confirm=confirm,
+                    mcp=mcp_manager,
+                )
+            except Exception as error:
+                renderer.show_error(f"\n{describe_error(error)}")
+                continue
+
+            renderer.show_message("\n" + format_agent_reply(answer, trace))
             continue
 
         handled, active_source, message = apply_source_command(
             question, active_source
         )
         if handled:
-            print(message)
+            renderer.show_message(message)
             continue
-
-        print("\nAssistant:\n")
 
         try:
             # The answer streams to the terminal as the model writes it.
-            answer, metadatas = answer_question(
-                question, history, active_source, on_token=print_token
-            )
+            with renderer.status("thinking…"):
+                answer, metadatas = answer_question(
+                    question, history, active_source, on_token=renderer.on_token
+                )
         except Exception as error:
-            print(describe_error(error))
+            renderer.show_error(describe_error(error))
             continue
 
-        print()
-        print_sources(metadatas)
+        renderer.finish_answer()
+        renderer.show_sources(source_legend(metadatas))
 
         # Save the turn after the model answers so follow-up questions have
         # enough context to understand words like "that" or "it".
@@ -274,7 +408,7 @@ def chat_loop() -> None:
             save_history(history, HISTORY_FILE)
         except OSError as error:
             # Losing persistence is worth a warning, not a dead session.
-            print(f"(could not save chat history: {error})")
+            renderer.show_message(f"(could not save chat history: {error})")
 
 
 def main() -> None:
@@ -287,16 +421,19 @@ def main() -> None:
     # python src/ask.py "How do I make a PyTorch model?"
     question = " ".join(sys.argv[1:])
 
-    print("Answer:\n")
+    renderer = ui.make_renderer()
+    renderer.show_message("Answer:\n")
 
     try:
-        answer, metadatas = answer_question(question, history=[], on_token=print_token)
+        answer, metadatas = answer_question(
+            question, history=[], on_token=renderer.on_token
+        )
     except Exception as error:
-        print(describe_error(error))
+        renderer.show_error(describe_error(error))
         raise SystemExit(1)
 
-    print()
-    print_sources(metadatas)
+    renderer.finish_answer()
+    renderer.show_sources(source_legend(metadatas))
 
 
 if __name__ == "__main__":

@@ -146,6 +146,33 @@ def test_format_report_is_readable() -> None:
     assert "pytorch" in text
 
 
+def test_code_flag_wires_the_code_retrieve_fn(monkeypatch) -> None:
+    recorded = {}
+
+    def fake_retrieve(question, n_results=4, source=None, **kwargs):
+        recorded.update(kwargs)
+        return results_with_paths(["src/rag.py"])
+
+    monkeypatch.setattr(eval_retrieval.rag, "retrieve", fake_retrieve)
+
+    golden = [{"question": "where is rrf?", "path": "src/rag.py"}]
+    eval_retrieval.evaluate(
+        golden, k=4, retrieve_fn=eval_retrieval.code_retrieve_fn()
+    )
+
+    assert recorded["collection_name"] == "local_code"
+    assert recorded["manifest_path"] == eval_retrieval.rag.CODE_MANIFEST_PATH
+
+
+def test_code_golden_file_loads_and_every_path_exists() -> None:
+    golden = eval_retrieval.load_golden(REPO_ROOT / "tests" / "golden_code.yaml")
+
+    assert len(golden) >= 6
+    for entry in golden:
+        assert entry["question"].strip()
+        assert (REPO_ROOT / entry["path"]).is_file(), entry["path"]
+
+
 def test_golden_file_loads_and_every_path_exists() -> None:
     golden = eval_retrieval.load_golden(REPO_ROOT / "tests" / "golden.yaml")
 

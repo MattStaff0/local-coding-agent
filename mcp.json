@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."],
+      "tools": ["git_status", "git_diff_unstaged", "git_log"]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "tools": ["fetch"]
+    }
+  }
+}

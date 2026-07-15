@@ -1,0 +1,15 @@
+# Golden retrieval set for the CODE index: question -> the file that should
+# be retrieved. Scored by src/eval_retrieval.py --code.
+
+- question: Where is the RRF fusion implemented?
+  path: src/rag.py
+- question: Where does retrieval refuse to answer off-topic questions?
+  path: src/rag.py
+- question: How are markdown docs split into heading sections?
+  path: src/rag.py
+- question: Where are Python files chunked per function and class?
+  path: src/code_chunker.py
+- question: Where does the agent sandbox file paths inside the project root?
+  path: src/agent_tools.py
+- question: How does the chat loop confirm file edits before applying them?
+  path: src/ask.py

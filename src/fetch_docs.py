@@ -1,8 +1,9 @@
 import re
 import sys
+import time
 from datetime import date
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 import yaml
@@ -16,22 +17,101 @@ REQUEST_TIMEOUT = 30
 # Some doc sites reject the default python-requests user agent.
 USER_AGENT = "local-coding-agent-docs-fetcher (personal RAG study tool)"
 
+# Crawl politeness defaults: enough pages for one doc section, one request
+# per second so a personal tool never looks like a scraper.
+DEFAULT_CRAWL_MAX_PAGES = 30
+DEFAULT_CRAWL_DELAY = 1.0
 
-def load_sources(registry_path: Path) -> dict[str, list[str]]:
-    """Read the sources registry mapping source names to lists of doc URLs."""
+_SKIP_LINK_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".zip")
+
+
+def load_sources(registry_path: Path) -> dict[str, dict]:
+    """Read the sources registry; every source normalizes to one dict.
+
+    A source is either a plain list of page URLs (the original format) or a
+    mapping with per-source options:
+
+        sklearn:
+          crawl: https://scikit-learn.org/stable/modules/
+          max_pages: 30
+          delay: 1.0
+          pages: [...]        # optional extra hand-picked URLs
+    """
     text = registry_path.read_text(encoding="utf-8")
     data = yaml.safe_load(text) or {}
 
-    for name, urls in data.items():
+    sources: dict[str, dict] = {}
+
+    for name, value in data.items():
         # A bare URL instead of a list would iterate per character and produce
         # dozens of one-letter "pages" — fail with a pointed message instead.
-        if isinstance(urls, str) or not isinstance(urls, list):
+        if isinstance(value, list):
+            sources[name] = _normalize_source({"pages": value}, name, registry_path)
+        elif isinstance(value, dict):
+            sources[name] = _normalize_source(value, name, registry_path)
+        else:
             raise ValueError(
-                f"Source '{name}' in {registry_path} must be a list of URLs, "
-                f"got {type(urls).__name__}"
+                f"Source '{name}' in {registry_path} must be a list of URLs "
+                f"or a mapping with crawl/pages, got {type(value).__name__}"
             )
 
-    return {name: list(urls) for name, urls in data.items()}
+    return sources
+
+
+def _normalize_source(value: dict, name: str, registry_path: Path) -> dict:
+    pages = value.get("pages", [])
+
+    if isinstance(pages, str) or not isinstance(pages, list):
+        raise ValueError(
+            f"Source '{name}' in {registry_path}: 'pages' must be a list of "
+            f"URLs, got {type(pages).__name__}"
+        )
+
+    return {
+        "pages": list(pages),
+        "crawl": value.get("crawl"),
+        "max_pages": int(value.get("max_pages", DEFAULT_CRAWL_MAX_PAGES)),
+        "delay": float(value.get("delay", DEFAULT_CRAWL_DELAY)),
+    }
+
+
+def crawl_urls(
+    prefix: str, max_pages: int = DEFAULT_CRAWL_MAX_PAGES
+) -> list[str]:
+    """Discover doc pages: fetch the prefix page, keep its links under prefix.
+
+    Depth-1 on purpose — doc sections almost always have an index page that
+    links every page in the section. Point crawl at that index; nested
+    sub-indexes need their own crawl entry. Fragments are stripped, binary
+    assets skipped, order preserved, capped at max_pages (index included).
+    """
+    try:
+        html = fetch_page(prefix)
+    except requests.RequestException as error:
+        print(f"  crawl failed for {prefix}: {error}")
+        return []
+
+    urls = [prefix]
+    seen = {prefix}
+    soup = BeautifulSoup(html, "html.parser")
+
+    for anchor in soup.find_all("a", href=True):
+        link = urljoin(prefix, anchor["href"]).split("#")[0]
+
+        if (
+            link in seen
+            or not link.startswith(prefix)
+            or link.lower().endswith(_SKIP_LINK_SUFFIXES)
+        ):
+            continue
+
+        seen.add(link)
+        urls.append(link)
+
+        if len(urls) >= max_pages:
+            break
+
+    return urls
 
 
 def slug_for_url(url: str) -> str:
@@ -238,22 +318,47 @@ def doc_age_days(path: Path, today: date | None = None) -> int | None:
 
 def fetch_source(
     source: str,
-    urls: list[str],
+    config: dict | list[str],
     docs_dir: Path = DOCS_DIR,
     max_age_days: int | None = None,
 ) -> tuple[list[Path], list[str]]:
-    """Fetch every URL for one source; a failed page is reported, not fatal.
+    """Fetch every page for one source; a failed page is reported, not fatal.
+
+    Accepts a plain URL list (the original format) or a normalized source
+    dict from load_sources. A 'crawl' prefix expands into discovered page
+    URLs first, and crawled sources pause 'delay' seconds between downloads.
 
     Returns the written file paths and the URLs that failed. Only network
     failures are skipped — a bug in our own code still crashes loudly. With
     max_age_days set, pages whose existing doc is not older than that age are
     not re-fetched.
     """
+    if isinstance(config, list):
+        config = {"pages": config, "crawl": None, "delay": 0.0}
+
+    urls = list(config.get("pages", []))
+    delay = 0.0
+
+    if config.get("crawl"):
+        delay = config.get("delay", DEFAULT_CRAWL_DELAY)
+        known = set(urls)
+        urls.extend(
+            url
+            for url in crawl_urls(
+                config["crawl"],
+                max_pages=config.get("max_pages", DEFAULT_CRAWL_MAX_PAGES),
+            )
+            if url not in known
+        )
+
     written = []
     failed = []
     taken_slugs: set[str] = set()
 
-    for url in urls:
+    for index, url in enumerate(urls):
+        if delay and index:
+            time.sleep(delay)
+
         slug = _unique_slug(url, taken_slugs)
 
         if max_age_days is not None:
@@ -322,10 +427,14 @@ def main() -> None:
     total = 0
     all_failed: list[str] = []
     for name in requested:
-        print(f"Fetching source '{name}' ({len(sources[name])} pages)")
-        written, failed = fetch_source(
-            name, sources[name], max_age_days=max_age_days
-        )
+        config = sources[name]
+        parts = []
+        if config["pages"]:
+            parts.append(f"{len(config['pages'])} pages")
+        if config["crawl"]:
+            parts.append(f"crawl {config['crawl']}")
+        print(f"Fetching source '{name}' ({', '.join(parts) or 'empty'})")
+        written, failed = fetch_source(name, config, max_age_days=max_age_days)
         total += len(written)
         all_failed.extend(failed)
 

@@ -60,7 +60,14 @@ def test_every_schema_is_a_complete_function_definition() -> None:
         assert function["parameters"]["type"] == "object"
         names.add(function["name"])
 
-    assert names == {"list_files", "grep", "read_file"}
+    assert names == {
+        "list_files",
+        "grep",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "run_command",
+    }
 
 
 def scripted_chat(monkeypatch: pytest.MonkeyPatch, responses: list[dict]) -> list[dict]:
@@ -165,13 +172,16 @@ def test_unknown_tool_calls_are_reported_to_the_model(
 
 
 def test_parse_agent_command_extracts_the_question() -> None:
-    assert agent.parse_agent_command("/agent where is retrieve?") == "where is retrieve?"
+    assert agent.parse_agent_command("/agent where is retrieve?") == (
+        "ask",
+        "where is retrieve?",
+    )
 
 
 def test_parse_agent_command_ignores_other_lines() -> None:
     assert agent.parse_agent_command("where is retrieve?") is None
-    assert agent.parse_agent_command("/agent") is None
-    assert agent.parse_agent_command("/agent   ") is None
+    assert agent.parse_agent_command("/agent") == ("status", "")
+    assert agent.parse_agent_command("/agent   ") == ("status", "")
     assert agent.parse_agent_command("/agentfoo") is None
     assert agent.parse_agent_command("/agents list") is None
 
