@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+# paths must be imported before ollama: importing paths loads .env, and
+# importing ollama builds its default client, which captures OLLAMA_HOST.
+import paths  # noqa: F401
+
 import ollama
 
 from agent_tools import (

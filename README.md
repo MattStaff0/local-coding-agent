@@ -64,6 +64,11 @@ local-ai-coding-agent/
 
 ## Configuration (environment variables)
 
+All of these can live in a `.env` file at the repo root — copy `.env.example`
+to `.env` and edit. It is loaded automatically on startup (before the Ollama
+client is created, so `OLLAMA_HOST` works from it), it is gitignored, and a
+variable already exported in your shell always beats the file.
+
 | Variable | Default | Effect |
 |---|---|---|
 | `OLLAMA_CHAT_MODEL` | `qwen2.5-coder:3b` | Chat + agent model (switch 3B ↔ 12B without code edits) |

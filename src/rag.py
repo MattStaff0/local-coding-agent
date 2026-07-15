@@ -4,13 +4,16 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+# paths must be imported before ollama: importing paths loads .env, and
+# importing ollama builds its default client, which captures OLLAMA_HOST.
+from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
+
 import chromadb
 import chromadb.errors
 import httpx
 import manifest as manifest_module
 import ollama
 import rerank
-from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
 from rank_bm25 import BM25Okapi
 
 
