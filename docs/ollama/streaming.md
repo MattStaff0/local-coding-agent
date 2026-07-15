@@ -1,6 +1,6 @@
 ---
 url: https://docs.ollama.com/capabilities/streaming.md
-fetched: 2026-07-02
+fetched: 2026-07-14
 ---
 
 > ## Documentation Index

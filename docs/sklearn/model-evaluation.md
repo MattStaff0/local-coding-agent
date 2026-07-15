@@ -1,6 +1,6 @@
 ---
 url: https://scikit-learn.org/stable/modules/model_evaluation.html
-fetched: 2026-07-03
+fetched: 2026-07-14
 ---
 
 # 3.4. Metrics and scoring: quantifying the quality of predictions

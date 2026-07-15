@@ -1,6 +1,6 @@
 ---
 url: https://docs.python.org/3/tutorial/datastructures.html
-fetched: 2026-07-02
+fetched: 2026-07-14
 ---
 
 # 5. Data Structures

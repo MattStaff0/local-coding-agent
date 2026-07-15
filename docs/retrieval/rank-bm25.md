@@ -1,6 +1,6 @@
 ---
 url: https://github.com/dorianbrown/rank_bm25
-fetched: 2026-07-02
+fetched: 2026-07-14
 ---
 
 # Rank-BM25: A two line search engine

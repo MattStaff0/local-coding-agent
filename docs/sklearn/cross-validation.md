@@ -1,6 +1,6 @@
 ---
 url: https://scikit-learn.org/stable/modules/cross_validation.html
-fetched: 2026-07-03
+fetched: 2026-07-14
 ---
 
 # 3.1. Cross-validation: evaluating estimator performance

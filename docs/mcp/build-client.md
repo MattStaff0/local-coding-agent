@@ -1,6 +1,6 @@
 ---
 url: https://modelcontextprotocol.io/docs/develop/build-client.md
-fetched: 2026-07-02
+fetched: 2026-07-14
 ---
 
 > ## Documentation Index

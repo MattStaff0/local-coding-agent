@@ -1,167 +1,367 @@
 ---
-url: https://docs.trychroma.com/docs/querying-collections/metadata-filtering
-fetched: 2026-07-02
+url: https://docs.trychroma.com/docs/querying-collections/metadata-filtering.md
+fetched: 2026-07-14
 ---
+
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.trychroma.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Metadata Filtering
+
+> Learn how to filter query results by metadata in Chroma collections.
 
 The `where` argument in `get` and `query` is used to filter records by their metadata. For example, in this `query` operation, Chroma will only query records that have the `page` metadata field with the value `10`:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.query(
+      query_texts=["first query", "second query"],
+      where={"page": 10}
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.query({
+    queryTexts: ["first query", "second query"],
+    where: { page: 10 },
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "page".to_string(),
+      comparison: MetadataComparison::Primitive(
+          PrimitiveOperator::Equal,
+          MetadataValue::Int(10),
+      ),
+  });
 
-```
-collection.query(
-    query_texts=["first query", "second query"],
-    where={"page": 10}
-)
-```
+  let results = collection
+      .query(vec![vec![0.1, 0.2, 0.3]], Some(10), Some(where_clause), None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 In order to filter on metadata, you must supply a `where` filter dictionary to the query. The dictionary must have the following structure:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  {
+      "metadata_field": {
+          <Operator>: <Value>
+      }
+  }
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  {
+      metadata_field: {
+          <Operator>: <Value>
+      }
+  }
+  ```
 
-Rust
-
-```
-{
-    "metadata_field": {
-        <Operator>: <Value>
-    }
-}
-```
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "metadata_field".to_string(),
+      comparison: MetadataComparison::Primitive(
+          PrimitiveOperator::Equal,
+          MetadataValue::Str("value".to_string()),
+      ),
+  });
+  ```
+</CodeGroup>
 
 Using the `$eq` operator is equivalent to using the metadata field directly in your `where` filter.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  {
+      "metadata_field": "search_string"
+  }
 
-TypeScript
+  # is equivalent to
 
-Rust
+  {
+      "metadata_field": {
+          "$eq": "search_string"
+      }
+  }
+  ```
 
-```
-{
-    "metadata_field": "search_string"
-}
+  ```typescript TypeScript theme={null}
+  {
+      metadata_field: "search_string"
+  }
 
-# is equivalent to
+  // is equivalent to
 
-{
-    "metadata_field": {
-        "$eq": "search_string"
-    }
-}
-```
+  {
+      metadata_field: {
+          "$eq":"search_string"
+      }
+  }
+  ```
+
+  ```rust Rust theme={null}
+  let direct = Where::Metadata(MetadataExpression {
+      key: "metadata_field".to_string(),
+      comparison: MetadataComparison::Primitive(
+          PrimitiveOperator::Equal,
+          MetadataValue::Str("search_string".to_string()),
+      ),
+  });
+  ```
+</CodeGroup>
 
 For example, here we query all records whose `page` metadata field is greater than 10:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.query(
+      query_texts=["first query", "second query"],
+      where={"page": { "$gt": 10 }}
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.query({
+    queryTexts: ["first query", "second query"],
+    where: { page: { $gt: 10 } },
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "page".to_string(),
+      comparison: MetadataComparison::Primitive(
+          PrimitiveOperator::GreaterThan,
+          MetadataValue::Int(10),
+      ),
+  });
 
-```
-collection.query(
-    query_texts=["first query", "second query"],
-    where={"page": { "$gt": 10 }}
-)
-```
+  let results = collection
+      .query(vec![vec![0.1, 0.2, 0.3]], Some(10), Some(where_clause), None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 ## Using Logical Operators
 
 You can also use the logical operators `$and` and `$or` to combine multiple filters.
+
 An `$and` operator will return results that match all the filters in the list.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  {
+      "$and": [
+          {
+              "metadata_field": {
+                  <Operator>: <Value>
+              }
+          },
+          {
+              "metadata_field": {
+                  <Operator>: <Value>
+              }
+          }
+      ]
+  }
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  {
+      "$and": [
+          {
+              metadata_field: { <Operator>: <Value> }
+          },
+          {
+              metadata_field: { <Operator>: <Value> }
+          }
+      ]
+  }
+  ```
 
-Rust
-
-```
-{
-    "$and": [
-        {
-            "metadata_field": {
-                <Operator>: <Value>
-            }
-        },
-        {
-            "metadata_field": {
-                <Operator>: <Value>
-            }
-        }
-    ]
-}
-```
+  ```rust Rust theme={null}
+  let where_clause = Where::Composite(CompositeExpression {
+      operator: BooleanOperator::And,
+      children: vec![
+          Where::Metadata(MetadataExpression {
+              key: "metadata_field".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::GreaterThanOrEqual,
+                  MetadataValue::Int(5),
+              ),
+          }),
+          Where::Metadata(MetadataExpression {
+              key: "metadata_field".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::LessThanOrEqual,
+                  MetadataValue::Int(10),
+              ),
+          }),
+      ],
+  });
+  ```
+</CodeGroup>
 
 For example, here we query all records whose `page` metadata field is between 5 and 10:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.query(
+      query_texts=["first query", "second query"],
+      where={
+          "$and": [
+              {"page": {"$gte": 5 }},
+              {"page": {"$lte": 10 }},
+          ]
+      }
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.query({
+    queryTexts: ["first query", "second query"],
+    where: {
+      $and: [{ page: { $gte: 5 } }, { page: { $lte: 10 } }],
+    },
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  let where_clause = Where::Composite(CompositeExpression {
+      operator: BooleanOperator::And,
+      children: vec![
+          Where::Metadata(MetadataExpression {
+              key: "page".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::GreaterThanOrEqual,
+                  MetadataValue::Int(5),
+              ),
+          }),
+          Where::Metadata(MetadataExpression {
+              key: "page".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::LessThanOrEqual,
+                  MetadataValue::Int(10),
+              ),
+          }),
+      ],
+  });
 
-```
-collection.query(
-    query_texts=["first query", "second query"],
-    where={
-        "$and": [
-            {"page": {"$gte": 5 }},
-            {"page": {"$lte": 10 }},
-        ]
-    }
-)
-```
+  let results = collection
+      .query(vec![vec![0.1, 0.2, 0.3]], Some(10), Some(where_clause), None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 An `$or` operator will return results that match any of the filters in the list.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  {
+      "$or": [
+          {
+              "metadata_field": {
+                  <Operator>: <Value>
+              }
+          },
+          {
+              "metadata_field": {
+                  <Operator>: <Value>
+              }
+          }
+      ]
+  }
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  {
+      "$or": [
+          {
+              metadata_field: { <Operator>: <Value> }
+          },
+          {
+              metadata_field: { <Operator>: <Value> }
+          }
+      ]
+  }
+  ```
 
-Rust
-
-```
-{
-    "$or": [
-        {
-            "metadata_field": {
-                <Operator>: <Value>
-            }
-        },
-        {
-            "metadata_field": {
-                <Operator>: <Value>
-            }
-        }
-    ]
-}
-```
+  ```rust Rust theme={null}
+  let where_clause = Where::Composite(CompositeExpression {
+      operator: BooleanOperator::Or,
+      children: vec![
+          Where::Metadata(MetadataExpression {
+              key: "metadata_field".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::Equal,
+                  MetadataValue::Str("value1".to_string()),
+              ),
+          }),
+          Where::Metadata(MetadataExpression {
+              key: "metadata_field".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::Equal,
+                  MetadataValue::Str("value2".to_string()),
+              ),
+          }),
+      ],
+  });
+  ```
+</CodeGroup>
 
 For example, here we get all records whose `color` metadata field is `red` or `blue`:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.get(
+      where={
+          "$or": [
+              {"color": "red"},
+              {"color": "blue"},
+          ]
+      }
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.get({
+    where: {
+      "$or": [{ "color": "red" }, { "color": "blue" }],
+    },
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  let where_clause = Where::Composite(CompositeExpression {
+      operator: BooleanOperator::Or,
+      children: vec![
+          Where::Metadata(MetadataExpression {
+              key: "color".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::Equal,
+                  MetadataValue::Str("red".to_string()),
+              ),
+          }),
+          Where::Metadata(MetadataExpression {
+              key: "color".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::Equal,
+                  MetadataValue::Str("blue".to_string()),
+              ),
+          }),
+      ],
+  });
 
-```
-collection.get(
-    where={
-        "$or": [
-            {"color": "red"},
-            {"color": "blue"},
-        ]
-    }
-)
-```
+  let results = collection
+      .get(None, Some(where_clause), None, None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 ## Using Inclusion Operators
 
@@ -172,51 +372,109 @@ The following inclusion operators are supported:
 
 An `$in` operator will return results where the metadata attribute is part of a provided list:
 
-Python
-
-TypeScript
-
-Rust
-
-```
-{
-  "metadata_field": {
-    "$in": ["value1", "value2", "value3"]
+<CodeGroup>
+  ```python Python theme={null}
+  {
+    "metadata_field": {
+      "$in": ["value1", "value2", "value3"]
+    }
   }
-}
-```
+  ```
 
-An `$nin` operator will return results where the metadata attribute is not part of a provided list (or the attribute’s key is not present):
-
-Python
-
-TypeScript
-
-Rust
-
-```
-{
-  "metadata_field": {
-    "$nin": ["value1", "value2", "value3"]
+  ```typescript TypeScript theme={null}
+  {
+      metadata_field: {
+          "$in": ["value1", "value2", "value3"]
+      }
   }
-}
-```
+  ```
+
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "metadata_field".to_string(),
+      comparison: MetadataComparison::Set(
+          SetOperator::In,
+          MetadataSetValue::Str(vec![
+              "value1".to_string(),
+              "value2".to_string(),
+              "value3".to_string(),
+          ]),
+      ),
+  });
+  ```
+</CodeGroup>
+
+An `$nin` operator will return results where the metadata attribute is not part of a provided list (or the attribute's key is not present):
+
+<CodeGroup>
+  ```python Python theme={null}
+  {
+    "metadata_field": {
+      "$nin": ["value1", "value2", "value3"]
+    }
+  }
+  ```
+
+  ```typescript TypeScript theme={null}
+  {
+      metadata_field: {
+          "$nin": ["value1", "value2", "value3"]
+      }
+  }
+  ```
+
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "metadata_field".to_string(),
+      comparison: MetadataComparison::Set(
+          SetOperator::NotIn,
+          MetadataSetValue::Str(vec![
+              "value1".to_string(),
+              "value2".to_string(),
+              "value3".to_string(),
+          ]),
+      ),
+  });
+  ```
+</CodeGroup>
 
 For example, here we get all records whose `author` metadata field is in a list of possible values:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.get(
+      where={
+         "author": {"$in": ["Rowling", "Fitzgerald", "Herbert"]}
+      }
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.get({
+    where: {
+      author: { $in: ["Rowling", "Fitzgerald", "Herbert"] },
+    },
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "author".to_string(),
+      comparison: MetadataComparison::Set(
+          SetOperator::In,
+          MetadataSetValue::Str(vec![
+              "Rowling".to_string(),
+              "Fitzgerald".to_string(),
+              "Herbert".to_string(),
+          ]),
+      ),
+  });
 
-```
-collection.get(
-    where={
-       "author": {"$in": ["Rowling", "Fitzgerald", "Herbert"]}
-    }
-)
-```
+  let results = collection
+      .get(None, Some(where_clause), None, None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 ## Using Array Metadata
 
@@ -226,106 +484,218 @@ Chroma supports storing arrays of values in metadata fields. You can use the `$c
 
 Metadata arrays can contain strings, integers, floats, or booleans. All elements in an array must be the same type.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.add(
+      ids=["m1", "m2", "m3"],
+      embeddings=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      metadatas=[
+          {"genres": ["action", "comedy"], "year": 2020},
+          {"genres": ["drama"], "year": 2021},
+          {"genres": ["action", "thriller"], "year": 2022},
+      ],
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.add({
+      ids: ["m1", "m2", "m3"],
+      embeddings: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      metadatas: [
+          { genres: ["action", "comedy"], year: 2020 },
+          { genres: ["drama"], year: 2021 },
+          { genres: ["action", "thriller"], year: 2022 },
+      ],
+  });
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  use chroma::types::{Metadata, MetadataValue};
 
-```
-collection.add(
-    ids=["m1", "m2", "m3"],
-    embeddings=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-    metadatas=[
-        {"genres": ["action", "comedy"], "year": 2020},
-        {"genres": ["drama"], "year": 2021},
-        {"genres": ["action", "thriller"], "year": 2022},
-    ],
-)
-```
+  let mut m = Metadata::new();
+  m.insert(
+      "genres".into(),
+      MetadataValue::StringArray(vec!["action".to_string(), "comedy".to_string()]),
+  );
+  m.insert("year".into(), MetadataValue::Int(2020));
+
+  // Also supports IntArray, FloatArray, and BoolArray
+  let mut m2 = Metadata::new();
+  m2.insert("scores".into(), MetadataValue::IntArray(vec![10, 20, 30]));
+  m2.insert("ratings".into(), MetadataValue::FloatArray(vec![4.5, 3.8]));
+  m2.insert("flags".into(), MetadataValue::BoolArray(vec![true, false]));
+  ```
+</CodeGroup>
 
 ### Filtering with `$contains` and `$not_contains`
 
 Use `$contains` to check if a metadata array includes a specific scalar value, and `$not_contains` to check that it does not.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  # Get all records where genres contains "action"
+  collection.get(
+      where={"genres": {"$contains": "action"}}
+  )
 
-TypeScript
+  # Get all records where genres does NOT contain "action"
+  collection.get(
+      where={"genres": {"$not_contains": "action"}}
+  )
 
-Rust
+  # Works with integer arrays too
+  collection.get(
+      where={"scores": {"$contains": 20}}
+  )
 
-```
-# Get all records where genres contains "action"
-collection.get(
-    where={"genres": {"$contains": "action"}}
-)
+  # Combine with other filters
+  collection.get(
+      where={
+          "$and": [
+              {"genres": {"$contains": "action"}},
+              {"year": {"$gte": 2021}},
+          ]
+      }
+  )
+  ```
 
-# Get all records where genres does NOT contain "action"
-collection.get(
-    where={"genres": {"$not_contains": "action"}}
-)
+  ```typescript TypeScript theme={null}
+  // Get all records where genres contains "action"
+  await collection.get({
+      where: { genres: { $contains: "action" } }
+  });
 
-# Works with integer arrays too
-collection.get(
-    where={"scores": {"$contains": 20}}
-)
+  // Get all records where genres does NOT contain "action"
+  await collection.get({
+      where: { genres: { $not_contains: "action" } }
+  });
 
-# Combine with other filters
-collection.get(
-    where={
-        "$and": [
-            {"genres": {"$contains": "action"}},
-            {"year": {"$gte": 2021}},
-        ]
-    }
-)
-```
+  // Works with integer arrays too
+  await collection.get({
+      where: { scores: { $contains: 20 } }
+  });
+
+  // Combine with other filters
+  await collection.get({
+      where: {
+          $and: [
+              { genres: { $contains: "action" } },
+              { year: { $gte: 2021 } },
+          ]
+      }
+  });
+  ```
+
+  ```rust Rust theme={null}
+  use chroma::types::{
+      ContainsOperator, MetadataComparison, MetadataExpression, MetadataValue, Where,
+  };
+
+  // Get all records where genres contains "action"
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "genres".to_string(),
+      comparison: MetadataComparison::ArrayContains(
+          ContainsOperator::Contains,
+          MetadataValue::Str("action".to_string()),
+      ),
+  });
+
+  let results = collection
+      .get(None, Some(where_clause), None, None, None)
+      .await?;
+
+  // Get all records where genres does NOT contain "action"
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "genres".to_string(),
+      comparison: MetadataComparison::ArrayContains(
+          ContainsOperator::NotContains,
+          MetadataValue::Str("action".to_string()),
+      ),
+  });
+
+  let results = collection
+      .get(None, Some(where_clause), None, None, None)
+      .await?;
+
+  // Works with integer arrays too
+  let where_clause = Where::Metadata(MetadataExpression {
+      key: "scores".to_string(),
+      comparison: MetadataComparison::ArrayContains(
+          ContainsOperator::Contains,
+          MetadataValue::Int(20),
+      ),
+  });
+
+  let results = collection
+      .get(None, Some(where_clause), None, None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 ### Supported Array Types
 
-| Type | Python | TypeScript | Rust |
-| --- | --- | --- | --- |
-| String | `["a", "b"]` | `["a", "b"]` | `MetadataValue::StringArray(...)` |
-| Integer | `[1, 2, 3]` | `[1, 2, 3]` | `MetadataValue::IntArray(...)` |
-| Float | `[1.5, 2.5]` | `[1.5, 2.5]` | `MetadataValue::FloatArray(...)` |
-| Boolean | `[true, false]` | `[true, false]` | `MetadataValue::BoolArray(...)` |
+| Type    | Python          | TypeScript      | Rust                              |
+| ------- | --------------- | --------------- | --------------------------------- |
+| String  | `["a", "b"]`    | `["a", "b"]`    | `MetadataValue::StringArray(...)` |
+| Integer | `[1, 2, 3]`     | `[1, 2, 3]`     | `MetadataValue::IntArray(...)`    |
+| Float   | `[1.5, 2.5]`    | `[1.5, 2.5]`    | `MetadataValue::FloatArray(...)`  |
+| Boolean | `[true, false]` | `[true, false]` | `MetadataValue::BoolArray(...)`   |
 
 **Constraints:**
 
 * All elements in an array must be the same type.
 * Empty arrays are not allowed.
 * Nested arrays (arrays of arrays) are not supported.
-* The `$contains` value must be a scalar that matches the array’s element type.
+* The `$contains` value must be a scalar that matches the array's element type.
 
 ## Combining with Document Search
 
 `.get` and `.query` can handle metadata filtering combined with [document search](./full-text-search):
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.query(
+      query_texts=["doc10", "thus spake zarathustra", ...],
+      n_results=10,
+      where={"metadata_field": "is_equal_to_this"},
+      where_document={"$contains":"search_string"}
+  )
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  await collection.query({
+      queryTexts: ["doc10", "thus spake zarathustra", ...],
+      nResults: 10,
+      where: { metadata_field: "is_equal_to_this" },
+      whereDocument: { "$contains": "search_string" }
+  })
+  ```
 
-Rust
+  ```rust Rust theme={null}
+  use chroma::types::{
+      BooleanOperator, CompositeExpression, DocumentExpression, DocumentOperator,
+      MetadataComparison, MetadataExpression, MetadataValue, PrimitiveOperator, Where,
+  };
 
-```
-collection.query(
-    query_texts=["doc10", "thus spake zarathustra", ...],
-    n_results=10,
-    where={"metadata_field": "is_equal_to_this"},
-    where_document={"$contains":"search_string"}
-)
-```
+  let where_clause = Where::Composite(CompositeExpression {
+      operator: BooleanOperator::And,
+      children: vec![
+          Where::Metadata(MetadataExpression {
+              key: "metadata_field".to_string(),
+              comparison: MetadataComparison::Primitive(
+                  PrimitiveOperator::Equal,
+                  MetadataValue::Str("is_equal_to_this".to_string()),
+              ),
+          }),
+          Where::Document(DocumentExpression {
+              operator: DocumentOperator::Contains,
+              pattern: "search_string".to_string(),
+          }),
+      ],
+  });
 
-Was this page helpful?
-
-YesNo
-
-[Suggest edits](https://github.com/chroma-core/chroma/edit/main/docs/mintlify/docs/querying-collections/metadata-filtering.mdx)
-
-[Query and Get
-
-Previous](/docs/querying-collections/query-and-get)[Full Text Search
-
-Next](/docs/querying-collections/full-text-search)
-
-⌘I
+  let results = collection
+      .query(vec![vec![0.1, 0.2, 0.3]], Some(10), Some(where_clause), None, None)
+      .await?;
+  ```
+</CodeGroup>

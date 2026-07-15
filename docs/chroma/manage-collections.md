@@ -1,7 +1,25 @@
 ---
-url: https://docs.trychroma.com/docs/collections/manage-collections
-fetched: 2026-07-02
+url: https://docs.trychroma.com/docs/collections/manage-collections.md
+fetched: 2026-07-14
 ---
+
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.trychroma.com/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Manage Collections
+
+> Learn how to create, get, modify, and delete Chroma collections.
+
+export const Danger = ({title, children}) => <div className="my-6">
+    <div className="relative pr-1.5 pb-1.5">
+      <div className="absolute top-1.5 left-1.5 right-0 bottom-0 bg-red-500 dark:bg-red-600" />
+      <div className="relative border border-black dark:border-gray-500 px-5 py-4 bg-white dark:bg-neutral-900">
+        {title && <p className="block mb-2"><strong>{title}</strong></p>}
+        {children}
+      </div>
+    </div>
+  </div>;
 
 Chroma lets you manage collections of embeddings, using the **collection** primitive. Collections are the fundamental unit of storage and querying in Chroma.
 
@@ -14,280 +32,341 @@ Chroma collections are created with a name. Collection names are used in the url
 * The name must not contain two consecutive dots.
 * The name must not be a valid IP address.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection = client.create_collection(name="my_collection")
+  ```
 
-TypeScript
+  ```typescript TypeScript theme={null}
+  const collection = await client.createCollection({
+    name: "my_collection",
+  });
+  ```
 
-Rust
-
-```
-collection = client.create_collection(name="my_collection")
-```
+  ```rust Rust theme={null}
+  let collection = client
+      .create_collection("my_collection", None, None)
+      .await?;
+  ```
+</CodeGroup>
 
 Note that collection names must be **unique** inside a Chroma database. If you try to create a collection with a name of an existing one, you will see an exception.
 
 ### Embedding Functions
 
-When you add documents to a collection, Chroma will embed them for you by using the collection’s **embedding function**. Chroma will use [sentence transformer](https://www.sbert.net/index.html) embedding function as a default.
+When you add documents to a collection, Chroma will embed them for you by using the collection's **embedding function**. Chroma will use [sentence transformer](https://www.sbert.net/index.html) embedding function as a default.
+
 Chroma also offers various embedding function, which you can provide upon creating a collection. For example, you can create a collection using the `OpenAIEmbeddingFunction`:
 
-* Python
-* TypeScript
-* Rust
+<Tabs>
+  <Tab title="Python" icon="python">
+    Install the `openai` package:
 
-Install the `openai` package:
+    <CodeGroup>
+      ```bash pip theme={null}
+      pip install openai
+      ```
 
-pip
+      ```bash poetry theme={null}
+      poetry add openai
+      ```
 
-poetry
+      ```bash uv theme={null}
+      uv pip install openai
+      ```
+    </CodeGroup>
 
-uv
+    Create your collection with the `OpenAIEmbeddingFunction`:
 
-```
-pip install openai
-```
+    ```python theme={null}
+    import os
+    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
-Create your collection with the `OpenAIEmbeddingFunction`:
-
-```
-import os
-from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-
-collection = client.create_collection(
-    name="my_collection",
-    embedding_function=OpenAIEmbeddingFunction(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        model_name="text-embedding-3-small"
+    collection = client.create_collection(
+        name="my_collection",
+        embedding_function=OpenAIEmbeddingFunction(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            model_name="text-embedding-3-small"
+        )
     )
-)
-```
+    ```
 
-Instead of having Chroma embed documents, you can also provide embeddings directly when [adding data](./add-data) to a collection. In this case, your collection will not have an embedding function set, and you will be responsible for providing embeddings directly when adding data and querying.
+    Instead of having Chroma embed documents, you can also provide embeddings directly when [adding data](./add-data) to a collection. In this case, your collection will not have an embedding function set, and you will be responsible for providing embeddings directly when adding data and querying.
 
-```
-collection = client.create_collection(
-    name="my_collection",
-    embedding_function=None
-)
-```
+    ```python theme={null}
+    collection = client.create_collection(
+        name="my_collection",
+        embedding_function=None
+    )
+    ```
+  </Tab>
 
-Install the `@chroma-core/openai` package to get access to the `OpenAIEmbeddingFunction`:
+  <Tab title="TypeScript" icon="js">
+    Install the `@chroma-core/openai` package to get access to the `OpenAIEmbeddingFunction`:
 
-npm
+    <CodeGroup>
+      ```bash npm theme={null}
+      npm install @chroma-core/openai
+      ```
 
-pnpm
+      ```bash pnpm theme={null}
+      pnpm add @chroma-core/openai
+      ```
 
-bun
+      ```bash bun theme={null}
+      bun add @chroma-core/openai
+      ```
 
-yarn
+      ```bash yarn theme={null}
+      yarn add @chroma-core/openai
+      ```
+    </CodeGroup>
 
-```
-npm install @chroma-core/openai
-```
+    Create your collection with the `OpenAIEmbeddingFunction`:
 
-Create your collection with the `OpenAIEmbeddingFunction`:
+    ```typescript theme={null}
+    import { OpenAIEmbeddingFunction } from "@chroma-core/openai";
 
-```
-import { OpenAIEmbeddingFunction } from "@chroma-core/openai";
+    const collection = await client.createCollection({
+      name: "my_collection",
+      embeddingFunction: new OpenAIEmbeddingFunction({
+        apiKey: process.env.OPENAI_API_KEY,
+        modelName: "text-embedding-3-small",
+      }),
+    });
+    ```
 
-const collection = await client.createCollection({
-  name: "my_collection",
-  embeddingFunction: new OpenAIEmbeddingFunction({
-    apiKey: process.env.OPENAI_API_KEY,
-    modelName: "text-embedding-3-small",
-  }),
-});
-```
+    Instead of having Chroma embed documents, you can also provide embeddings directly when [adding data](./add-data) to a collection. In this case, your collection will not have an embedding function set, and you will be responsible for providing embeddings directly when adding data and querying.
 
-Instead of having Chroma embed documents, you can also provide embeddings directly when [adding data](./add-data) to a collection. In this case, your collection will not have an embedding function set, and you will be responsible for providing embeddings directly when adding data and querying.
+    ```typescript theme={null}
+    const collection = await client.createCollection({
+      name: "my_collection",
+      embeddingFunction: null,
+    });
+    ```
+  </Tab>
 
-```
-const collection = await client.createCollection({
-  name: "my_collection",
-  embeddingFunction: null,
-});
-```
+  <Tab title="Rust" icon="rust">
+    The Rust client expects embeddings to be provided directly when using `add`, `get`, `search` and other functions. Use your provider SDK to generate embeddings, then pass them to Chroma.
 
-The Rust client expects embeddings to be provided directly when using `add`, `get`, `search` and other functions. Use your provider SDK to generate embeddings, then pass them to Chroma.
-
-```
-collection.add(
-    vec!["id1".to_string(), "id2".to_string(), "id3".to_string()],
-    vec![
-        vec![1.1, 2.3, 3.2],
-        vec![4.5, 6.9, 4.4],
-        vec![1.1, 2.3, 3.2],
-    ],
-    Some(vec![
-        Some("lorem ipsum...".to_string()),
-        Some("doc2".to_string()),
-        Some("doc3".to_string()),
-    ]),
-    None,
-    None,
-).await?;
-```
+    ```rust theme={null}
+    collection.add(
+        vec!["id1".to_string(), "id2".to_string(), "id3".to_string()],
+        vec![
+            vec![1.1, 2.3, 3.2],
+            vec![4.5, 6.9, 4.4],
+            vec![1.1, 2.3, 3.2],
+        ],
+        Some(vec![
+            Some("lorem ipsum...".to_string()),
+            Some("doc2".to_string()),
+            Some("doc3".to_string()),
+        ]),
+        None,
+        None,
+    ).await?;
+    ```
+  </Tab>
+</Tabs>
 
 ### Collection Metadata
 
 When creating collections, you can pass the optional `metadata` argument to add a mapping of metadata key-value pairs to your collections. This can be useful for adding general information about the collection like creation time, description of the data stored in the collection, and more.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  from datetime import datetime
 
-TypeScript
+  collection = client.create_collection(
+      name="my_collection",
+      embedding_function=emb_fn,
+      metadata={
+          "description": "my first Chroma collection",
+          "created": str(datetime.now())
+      }
+  )
+  ```
 
-Rust
+  ```typescript TypeScript theme={null}
+  let collection = await client.createCollection({
+    name: "my_collection",
+    embeddingFunction: emb_fn,
+    metadata: {
+      description: "my first Chroma collection",
+      created: new Date().toString(),
+    },
+  });
+  ```
 
-```
-from datetime import datetime
+  ```rust Rust theme={null}
+  use chroma::types::Metadata;
 
-collection = client.create_collection(
-    name="my_collection",
-    embedding_function=emb_fn,
-    metadata={
-        "description": "my first Chroma collection",
-        "created": str(datetime.now())
-    }
-)
-```
+  let mut metadata = Metadata::new();
+  metadata.insert("description".to_string(), "my first Chroma collection".into());
+  metadata.insert("created".to_string(), "2024-01-01T00:00:00Z".into());
+
+  let collection = client
+      .create_collection("my_collection", None, Some(metadata))
+      .await?;
+  ```
+</CodeGroup>
 
 ## Getting Collections
 
-* Python
-* TypeScript
-* Rust
+<Tabs>
+  <Tab title="Python" icon="python">
+    There are several ways to get a collection after it was created.
 
-There are several ways to get a collection after it was created.The `get_collection` function will get a collection from Chroma by name. It returns a `Collection` object with `name`, `metadata`, `configuration`, and `embedding_function`.
+    The `get_collection` function will get a collection from Chroma by name. It returns a `Collection` object with `name`, `metadata`, `configuration`, and `embedding_function`.
 
-```
-collection = client.get_collection(name="my-collection")
-```
+    ```python theme={null}
+    collection = client.get_collection(name="my-collection")
+    ```
 
-The `get_or_create_collection` function behaves similarly, but will create the collection if it doesn’t exist. You can pass to it the same arguments `create_collection` expects, and the client will ignore them if the collection already exists.
+    The `get_or_create_collection` function behaves similarly, but will create the collection if it doesn't exist. You can pass to it the same arguments `create_collection` expects, and the client will ignore them if the collection already exists.
 
-```
-collection = client.get_or_create_collection(
-    name="my-collection",
-    metadata={"description": "..."}
-)
-```
+    ```python theme={null}
+    collection = client.get_or_create_collection(
+        name="my-collection",
+        metadata={"description": "..."}
+    )
+    ```
 
-The `list_collections` function returns the collections you have in your Chroma database. The collections will be ordered by creation time from oldest to newest.
+    The `list_collections` function returns the collections you have in your Chroma database. The collections will be ordered by creation time from oldest to newest.
 
-```
-collections = client.list_collections()
-```
+    ```python theme={null}
+    collections = client.list_collections()
+    ```
 
-By default, `list_collections` returns up to 100 collections. If you have more than 100 collections, or need to get only a subset of your collections, you can use the `limit` and `offset` arguments:
+    By default, `list_collections` returns up to 100 collections. If you have more than 100 collections, or need to get only a subset of your collections, you can use the `limit` and `offset` arguments:
 
-```
-first_collections_batch = client.list_collections(limit=100) # get the first 100 collections
-second_collections_batch = client.list_collections(limit=100, offset=100) # get the next 100 collections
-collections_subset = client.list_collections(limit=20, offset=50) # get 20 collections starting from the 50th
-```
+    ```python theme={null}
+    first_collections_batch = client.list_collections(limit=100) # get the first 100 collections
+    second_collections_batch = client.list_collections(limit=100, offset=100) # get the next 100 collections
+    collections_subset = client.list_collections(limit=20, offset=50) # get 20 collections starting from the 50th
+    ```
 
-Current versions of Chroma store the embedding function you used to create a collection on the server, so the client can resolve it for you on subsequent “get” operations. If you are running an older version of the Chroma client or server (earlier than 1.1.13), you will need to provide the same embedding function you used to create a collection when using `get_collection`:
+    Current versions of Chroma store the embedding function you used to create a collection on the server, so the client can resolve it for you on subsequent "get" operations. If you are running an older version of the Chroma client or server (earlier than 1.1.13), you will need to provide the same embedding function you used to create a collection when using `get_collection`:
 
-```
-collection = client.get_collection(
-    name='my-collection',
-    embedding_function=ef
-)
-```
+    ```python theme={null}
+    collection = client.get_collection(
+        name='my-collection',
+        embedding_function=ef
+    )
+    ```
+  </Tab>
 
-There are several ways to get a collection after it was created.The `getCollection` function will get a collection from Chroma by name. It returns a collection object with `name`, `metadata`, `configuration`, and `embeddingFunction`. If you did not provide an embedding function to `createCollection`, you can provide it to `getCollection`.
+  <Tab title="TypeScript" icon="js">
+    There are several ways to get a collection after it was created.
 
-```
-const collection = await client.getCollection({ name: "my-collection " });
-```
+    The `getCollection` function will get a collection from Chroma by name. It returns a collection object with `name`, `metadata`, `configuration`, and `embeddingFunction`. If you did not provide an embedding function to `createCollection`, you can provide it to `getCollection`.
 
-The `getOrCreate` function behaves similarly, but will create the collection if it doesn’t exist. You can pass to it the same arguments `createCollection` expects, and the client will ignore them if the collection already exists.
+    ```typescript theme={null}
+    const collection = await client.getCollection({ name: "my-collection " });
+    ```
 
-```
-const collection = await client.getOrCreateCollection({
-  name: "my-collection",
-  metadata: { description: "..." },
-});
-```
+    The `getOrCreate` function behaves similarly, but will create the collection if it doesn't exist. You can pass to it the same arguments `createCollection` expects, and the client will ignore them if the collection already exists.
 
-If you need to get multiple collections at once, you can use `getCollections()`:
+    ```typescript theme={null}
+    const collection = await client.getOrCreateCollection({
+      name: "my-collection",
+      metadata: { description: "..." },
+    });
+    ```
 
-```
-const [col1, col2] = client.getCollections(["col1", "col2"]);
-```
+    If you need to get multiple collections at once, you can use `getCollections()`:
 
-The `listCollections` function returns all the collections you have in your Chroma database. The collections will be ordered by creation time from oldest to newest.
+    ```typescript theme={null}
+    const [col1, col2] = client.getCollections(["col1", "col2"]);
+    ```
 
-```
-const collections = await client.listCollections();
-```
+    The `listCollections` function returns all the collections you have in your Chroma database. The collections will be ordered by creation time from oldest to newest.
 
-By default, `listCollections` returns up to 100 collections. If you have more than 100 collections, or need to get only a subset of your collections, you can use the `limit` and `offset` arguments:
+    ```typescript theme={null}
+    const collections = await client.listCollections();
+    ```
 
-```
-const firstCollectionsBatch = await client.listCollections({ limit: 100 }); // get the first 100 collections
-const secondCollectionsBatch = await client.listCollections({
-  limit: 100,
-  offset: 100,
-}); // get the next 100 collections
-const collectionsSubset = await client.listCollections({
-  limit: 20,
-  offset: 50,
-}); // get 20 collections starting from the 50th
-```
+    By default, `listCollections` returns up to 100 collections. If you have more than 100 collections, or need to get only a subset of your collections, you can use the `limit` and `offset` arguments:
 
-Current versions of Chroma store the embedding function you used to create a collection on the server, so the client can resolve it for you on subsequent “get” operations. If you are running an older version of the Chroma JS/TS client (earlier than 3.04) or server (earlier than 1.1.13), you will need to provide the same embedding function you used to create a collection when using `getCollection` and `getCollections`:
+    ```typescript theme={null}
+    const firstCollectionsBatch = await client.listCollections({ limit: 100 }); // get the first 100 collections
+    const secondCollectionsBatch = await client.listCollections({
+      limit: 100,
+      offset: 100,
+    }); // get the next 100 collections
+    const collectionsSubset = await client.listCollections({
+      limit: 20,
+      offset: 50,
+    }); // get 20 collections starting from the 50th
+    ```
 
-```
-const collection = await client.getCollection({
-  name: "my-collection",
-  embeddingFunction: ef,
-});
+    Current versions of Chroma store the embedding function you used to create a collection on the server, so the client can resolve it for you on subsequent "get" operations. If you are running an older version of the Chroma JS/TS client (earlier than 3.04) or server (earlier than 1.1.13), you will need to provide the same embedding function you used to create a collection when using `getCollection` and `getCollections`:
 
-const [col1, col2] = client.getCollections([
-  { name: "col1", embeddingFunction: openaiEF },
-  { name: "col2", embeddingFunction: defaultEF },
-]);
-```
+    ```typescript theme={null}
+    const collection = await client.getCollection({
+      name: "my-collection",
+      embeddingFunction: ef,
+    });
 
-Use the client to get collections or list them with pagination.
+    const [col1, col2] = client.getCollections([
+      { name: "col1", embeddingFunction: openaiEF },
+      { name: "col2", embeddingFunction: defaultEF },
+    ]);
+    ```
+  </Tab>
 
-```
-let collection = client.get_collection("my-collection").await?;
+  <Tab title="Rust" icon="rust">
+    Use the client to get collections or list them with pagination.
 
-let collection = client
-    .get_or_create_collection("my-collection", None, None)
-    .await?;
+    ```rust theme={null}
+    let collection = client.get_collection("my-collection").await?;
 
-let collections = client.list_collections(100, Some(0)).await?;
-```
+    let collection = client
+        .get_or_create_collection("my-collection", None, None)
+        .await?;
+
+    let collections = client.list_collections(100, Some(0)).await?;
+    ```
+  </Tab>
+</Tabs>
 
 ## Modifying Collections
 
 After a collection is created, you can modify its name, metadata and elements of its [index configuration](./configure) with the `modify` method:
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.modify(
+     name="new-name",
+     metadata={"description": "new description"}
+  )
+  ```
 
-TypeScript
-
-```
-collection.modify(
-   name="new-name",
-   metadata={"description": "new description"}
-)
-```
+  ```typescript TypeScript theme={null}
+  await collection.modify({
+    name: "new-name",
+    metadata: { description: "new description" },
+  });
+  ```
+</CodeGroup>
 
 ## Deleting Collections
 
-You can delete a collection by name. This action will delete a collection, all of its embeddings, and associated documents and records’ metadata.
+You can delete a collection by name. This action will delete a collection, all of its embeddings, and associated documents and records' metadata.
 
-Python
+<Danger>
+  Deleting collections is destructive and not reversible
+</Danger>
 
-TypeScript
+<CodeGroup>
+  ```python Python theme={null}
+  client.delete_collection(name="my-collection")
+  ```
 
-```
-client.delete_collection(name="my-collection")
-```
+  ```typescript TypeScript theme={null}
+  await client.deleteCollection({ name: "my-collection" });
+  ```
+</CodeGroup>
 
 ## Convenience Methods
 
@@ -296,25 +375,14 @@ Collections also offer a few useful convenience methods:
 * `count` - returns the number of records in the collection.
 * `peek` - returns the first 10 records in the collection.
 
-Python
+<CodeGroup>
+  ```python Python theme={null}
+  collection.count()
+  collection.peek()
+  ```
 
-TypeScript
-
-```
-collection.count()
-collection.peek()
-```
-
-Was this page helpful?
-
-YesNo
-
-[Suggest edits](https://github.com/chroma-core/chroma/edit/main/docs/mintlify/docs/collections/manage-collections.mdx)
-
-[Client-Server Mode
-
-Previous](/docs/run-chroma/client-server)[Adding Data to Chroma Collections
-
-Next](/docs/collections/add-data)
-
-⌘I
+  ```typescript TypeScript theme={null}
+  await collection.count();
+  await collection.peek();
+  ```
+</CodeGroup>

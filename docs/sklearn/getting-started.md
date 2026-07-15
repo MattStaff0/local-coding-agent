@@ -1,6 +1,6 @@
 ---
 url: https://scikit-learn.org/stable/getting_started.html
-fetched: 2026-07-03
+fetched: 2026-07-14
 ---
 
 # Getting Started

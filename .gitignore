@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 .env
 
@@ -13,3 +14,9 @@ study-notes/
 
 *.egg-info/
 .ask_history
+
+# Matt's local Windows operating runbook
+RUNBOOK.md
+
+# how it works file for agent
+how-it-works.md
