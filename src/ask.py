@@ -10,8 +10,11 @@ from typing import Any
 import chromadb.errors
 import httpx
 
+import manifest as manifest_module
 import mcp_client
 import paths
+import rag
+import rerank
 import ui
 from agent import AgentSession, format_agent_reply, parse_agent_command, run_agent
 from rag import (
@@ -229,7 +232,7 @@ def apply_source_command(
     return False, active_source, ""
 
 
-def chat_loop(renderer=None, read_input=None) -> None:
+def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) -> None:
     """Run an interactive terminal chat with persistent memory."""
     renderer = renderer or ui.make_renderer()
     read_input = read_input or ui.make_input(safe_list_sources)
@@ -239,12 +242,16 @@ def chat_loop(renderer=None, read_input=None) -> None:
     history = load_history(HISTORY_FILE)
     active_source: str | None = None
     last_export: tuple[str, str, list[dict[str, Any]]] | None = None
-    agent_session: AgentSession | None = None
+    agent_session: AgentSession | None = (
+        AgentSession(root=agent_root) if agent_root is not None else None
+    )
     mcp_manager = None
     mcp_started = False
 
     renderer.show_message("Local RAG chat")
     renderer.show_message("Type your question, /help for commands, /exit to quit.")
+    if agent_session is not None:
+        renderer.show_message(f"Agent root: {agent_session.root}")
 
     if history:
         renderer.show_message(f"(restored {len(history)} messages from {HISTORY_FILE})")
@@ -411,15 +418,67 @@ def chat_loop(renderer=None, read_input=None) -> None:
             renderer.show_message(f"(could not save chat history: {error})")
 
 
+def _index_summary(manifest_path: Path) -> str:
+    """One line describing an index from its manifest — no network, no Chroma."""
+    records = manifest_module.load_manifest(manifest_path)
+    if not records:
+        return "not built"
+    sources = {record.get("source", "?") for record in records}
+    return f"{len(records)} chunks across {len(sources)} sources"
+
+
+def doctor() -> None:
+    """Report where everything lives and how the models are configured.
+
+    Never touches the network or opens Chroma, so it is safe to run when
+    Ollama is down — that is exactly when you need it.
+    """
+    env_state = "found" if paths.ENV_FILE.exists() else "not found"
+    host = os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434 (default)"
+    reranker = f"on ({rerank.RERANK_MODEL})" if rerank.enabled() else "off"
+
+    print("lca doctor")
+    print(f"  project home:  {paths.PROJECT_ROOT}")
+    print(f"  .env file:     {paths.ENV_FILE} ({env_state})")
+    print(f"  OLLAMA_HOST:   {host}")
+    print(f"  chat model:    {rag.CHAT_MODEL}")
+    print(f"  embed model:   {rag.EMBED_MODEL}")
+    print(f"  reranker:      {reranker}")
+    print(f"  docs index:    {_index_summary(paths.MANIFEST_PATH)}")
+    print(f"  code index:    {_index_summary(rag.CODE_MANIFEST_PATH)}")
+    print(f"  agent root:    the directory you launch from"
+          " (override: lca --root <path>, or /agent root <path> in chat)")
+
+
 def main() -> None:
     """Use chat mode by default, or answer a single command-line question."""
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+
+    if args and args[0] == "doctor":
+        doctor()
+        return
+
+    if args and args[0] == "--root":
+        if len(args) < 2:
+            print("Usage: lca --root <path>")
+            raise SystemExit(2)
+        root = Path(args[1]).expanduser()
+        if not root.is_dir():
+            print(f"No such directory: {args[1]}")
+            raise SystemExit(2)
+        if args[2:]:
+            print("--root starts chat mode; ask one-shot questions without it.")
+            raise SystemExit(2)
+        chat_loop(agent_root=root.resolve())
+        return
+
+    if not args:
         chat_loop()
         return
 
     # This keeps the old one-shot usage:
     # python src/ask.py "How do I make a PyTorch model?"
-    question = " ".join(sys.argv[1:])
+    question = " ".join(args)
 
     renderer = ui.make_renderer()
     renderer.show_message("Answer:\n")

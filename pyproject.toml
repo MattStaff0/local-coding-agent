@@ -22,6 +22,9 @@ dependencies = [
 
 [project.scripts]
 lca = "ask:main"
+lca-fetch-docs = "fetch_docs:main"
+lca-ingest = "ingest:main"
+lca-ingest-code = "ingest_code:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

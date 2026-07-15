@@ -1,5 +1,22 @@
 # Run-anywhere workflow plan
 
+## Status: DONE 2026-07-14 — all items shipped or resolved
+
+- Items 1, 2, 4, 6, 7 (console commands, --root, doctor, persistent PATH
+  command, target-repo workflow): implemented.
+- Item 3 (tests): `tests/test_run_anywhere.py` — doctor, --root parsing and
+  validation, agent-root preset, and a subprocess test proving a foreign
+  launch directory stays pristine.
+- Items 5, 8 (index profiles, zsh alternative): documented in README
+  ("Run it from anywhere").
+- Found during verification: macOS (likely iCloud Desktop sync) sets the
+  hidden flag on venv `.pth` files and Python ≥3.12 skips hidden `.pth`
+  files, which silently broke the editable install's `lca`. The persistent
+  commands are therefore launcher scripts in `~/.local/bin` that run
+  `python src/ask.py` directly — no `.pth` involved. Documented in README.
+
+## Original plan follows
+
 ## Current status
 
 The core behavior already works:
