@@ -13,7 +13,7 @@ def test_write_and_load_roundtrip(tmp_path):
     manifest.write_manifest(records, path)
 
     assert manifest.load_manifest(path) == records
-    assert not path.with_suffix(".tmp").exists()
+    assert not list(tmp_path.glob(".manifest-*.tmp"))
 
 
 def test_load_missing_manifest_returns_empty(tmp_path):
@@ -34,7 +34,7 @@ def test_concurrent_manifest_writes_do_not_collide(tmp_path, monkeypatch):
     barrier = threading.Barrier(2)
 
     def synchronized_replace(self, target):
-        barrier.wait(timeout=1)
+        barrier.wait(timeout=5)
         return original_replace(self, target)
 
     monkeypatch.setattr(Path, "replace", synchronized_replace)
@@ -50,11 +50,50 @@ def test_concurrent_manifest_writes_do_not_collide(tmp_path, monkeypatch):
     second = threading.Thread(target=write, args=([{"id": "second"}],))
     first.start()
     second.start()
-    first.join()
-    second.join()
+    first.join(timeout=10)
+    second.join(timeout=10)
 
+    assert not first.is_alive() and not second.is_alive()
     assert not errors
     assert manifest.load_manifest(path) in ([{"id": "first"}], [{"id": "second"}])
+    assert not list(tmp_path.glob(".manifest-*.tmp"))
+
+
+def test_serialization_failure_preserves_target_and_cleans_temp(tmp_path):
+    path = tmp_path / "manifest.jsonl"
+    original = [{"id": "original"}]
+    manifest.write_manifest(original, path)
+
+    try:
+        manifest.write_manifest([{"bad": object()}], path)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected a JSON serialization failure")
+
+    assert manifest.load_manifest(path) == original
+    assert not list(tmp_path.glob(".manifest-*.tmp"))
+
+
+def test_replace_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch):
+    path = tmp_path / "manifest.jsonl"
+    original = [{"id": "original"}]
+    manifest.write_manifest(original, path)
+
+    def broken_replace(self, target):
+        raise OSError("replace unavailable")
+
+    monkeypatch.setattr(Path, "replace", broken_replace)
+
+    try:
+        manifest.write_manifest([{"id": "replacement"}], path)
+    except OSError as error:
+        assert "replace unavailable" in str(error)
+    else:
+        raise AssertionError("expected replace to fail")
+
+    assert manifest.load_manifest(path) == original
+    assert not list(tmp_path.glob(".manifest-*.tmp"))
 
 
 def test_ingest_rebuilds_manifest(tmp_path, monkeypatch):
@@ -121,7 +160,7 @@ def test_hybrid_retrieve_uses_manifest_not_full_corpus(tmp_path, monkeypatch):
         manifest_path,
     )
     monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
-    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+    rag._manifest_cache.clear()
 
     spy = _SpyCollection(ids, documents, metadatas, [0.2, 0.3])
     monkeypatch.setattr(rag, "get_client", lambda: _fake_client(spy))
@@ -141,7 +180,7 @@ def test_bm25_cache_invalidates_on_manifest_change(tmp_path, monkeypatch):
         [{"id": "a-0", "source": "python", "tokens": ["lists"]}], manifest_path
     )
     monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
-    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+    rag._manifest_cache.clear()
 
     first = rag._bm25_for_source(None)
     again = rag._bm25_for_source(None)
@@ -169,6 +208,29 @@ def test_manifest_bm25_cache_tolerates_all_tokenless_records(tmp_path, monkeypat
         [{"id": "a-0", "source": "python", "tokens": []}], manifest_path
     )
     monkeypatch.setattr(rag, "MANIFEST_PATH", manifest_path)
-    rag._manifest_cache.update(mtime=None, records=[], bm25={})
+    rag._manifest_cache.clear()
 
     assert rag._bm25_for_source("python") is None
+
+
+def test_bm25_cache_entries_are_isolated_by_manifest_path(tmp_path):
+    docs_manifest = tmp_path / "manifest.jsonl"
+    code_manifest = tmp_path / "code-manifest.jsonl"
+    manifest.write_manifest(
+        [{"id": "docs-0", "source": "numpy", "tokens": ["broadcasting"]}],
+        docs_manifest,
+    )
+    manifest.write_manifest(
+        [{"id": "code-0", "source": "project", "tokens": ["retrieve"]}],
+        code_manifest,
+    )
+    rag._manifest_cache.clear()
+
+    docs = rag._bm25_for_source(None, manifest_path=docs_manifest)
+    code = rag._bm25_for_source(None, manifest_path=code_manifest)
+    docs_again = rag._bm25_for_source(None, manifest_path=docs_manifest)
+
+    assert docs is docs_again
+    assert docs is not None and docs[1] == ["docs-0"]
+    assert code is not None and code[1] == ["code-0"]
+    assert set(rag._manifest_cache) == {str(docs_manifest), str(code_manifest)}
