@@ -208,6 +208,7 @@ persistent command in every new terminal, install thin launchers into
 
 ```bash
 cd ~/Desktop/local-coding-agent
+[ -x .venv/bin/python ] || { echo "run this from the repo root (no .venv here)"; exit 1; }
 mkdir -p ~/.local/bin
 for pair in "lca:ask" "lca-fetch-docs:fetch_docs" "lca-ingest:ingest" "lca-ingest-code:ingest_code"; do
   cmd="${pair%%:*}"; mod="${pair##*:}"
@@ -228,6 +229,11 @@ on `.pth` files inside the venv, and Python ≥ 3.12 silently skips hidden
 run `python src/ask.py` directly, which needs no `.pth` at all. If the venv
 `lca` ever shows that error, that's the cause (`chflags nohidden` fixes it
 until the flag comes back).
+
+Heads-up: in a shell with the venv activated, the venv's own `lca` console
+script shadows these launchers (`.venv/bin` lands first on PATH). If `lca`
+fails with `ModuleNotFoundError` only in venv shells, that's why —
+`deactivate` (or `hash -r`) and check `which lca`.
 
 Working on two repos with two independent doc/code indexes? Set `LCA_HOME`
 to a second data directory in that shell (or a second launcher) — all

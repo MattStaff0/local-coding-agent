@@ -419,11 +419,29 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
 
 
 def _index_summary(manifest_path: Path) -> str:
-    """One line describing an index from its manifest — no network, no Chroma."""
-    records = manifest_module.load_manifest(manifest_path)
-    if not records:
+    """One line describing an index from its manifest — no network, no Chroma.
+
+    Never raises: a torn or unreadable manifest is one of the broken states
+    doctor exists to diagnose, so it must be reported, not crash the report.
+    """
+    try:
+        manifest_path.stat()
+    except FileNotFoundError:
         return "not built"
-    sources = {record.get("source", "?") for record in records}
+    except OSError as error:
+        # exists() would hide symlink loops and permission errors as False,
+        # turning a broken path into a misleading "not built".
+        return f"unreadable ({error}) — rebuild with lca-ingest"
+    try:
+        records = manifest_module.load_manifest(manifest_path)
+    except (json.JSONDecodeError, OSError) as error:
+        return f"unreadable ({error}) — rebuild with lca-ingest"
+    if not records:
+        return "empty (0 chunks) — rebuild with lca-ingest"
+    sources = {
+        record.get("source", "?") if isinstance(record, dict) else "?"
+        for record in records
+    }
     return f"{len(records)} chunks across {len(sources)} sources"
 
 
@@ -455,6 +473,11 @@ def main() -> None:
     args = sys.argv[1:]
 
     if args and args[0] == "doctor":
+        if args[1:]:
+            # Refusing beats silently discarding the rest of a one-shot
+            # question that happened to start with the word "doctor".
+            print('doctor takes no arguments; quote one-shot questions: lca "..."')
+            raise SystemExit(2)
         doctor()
         return
 
@@ -463,8 +486,16 @@ def main() -> None:
             print("Usage: lca --root <path>")
             raise SystemExit(2)
         root = Path(args[1]).expanduser()
-        if not root.is_dir():
-            print(f"No such directory: {args[1]}")
+        try:
+            if not root.is_dir():
+                detail = (
+                    "not a directory" if root.exists() else "no such directory"
+                )
+                print(f"--root {args[1]}: {detail}")
+                raise SystemExit(2)
+        except OSError as error:
+            # is_dir() raises on e.g. permission-denied parents.
+            print(f"--root {args[1]}: cannot access ({error})")
             raise SystemExit(2)
         if args[2:]:
             print("--root starts chat mode; ask one-shot questions without it.")
@@ -475,6 +506,12 @@ def main() -> None:
     if not args:
         chat_loop()
         return
+
+    if args[0].startswith("-"):
+        # Anything else would be silently sent to the model as a "question".
+        print(f'Unknown option: {args[0]} — usage: lca | lca "question" | '
+              "lca doctor | lca --root <path>")
+        raise SystemExit(2)
 
     # This keeps the old one-shot usage:
     # python src/ask.py "How do I make a PyTorch model?"
