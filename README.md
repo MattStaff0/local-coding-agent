@@ -239,6 +239,62 @@ Working on two repos with two independent doc/code indexes? Set `LCA_HOME`
 to a second data directory in that shell (or a second launcher) — all
 generated state (docs, chroma_db, manifests, history) follows it.
 
+### How run-anywhere actually works
+
+Three pieces make `lca` behave the same from any directory:
+
+1. **The launcher pins the interpreter.** Each script in `~/.local/bin` is
+   two lines: `exec <repo>/.venv/bin/python <repo>/src/ask.py "$@"`. The
+   repo's venv and code are baked in as absolute paths, so it doesn't matter
+   what shell, venv, or directory you're in when you type `lca`.
+2. **`src/paths.py` pins the data.** Every module gets its file locations
+   from `paths.py`, which anchors them to the *repo's* location (it derives
+   the repo root from its own file path, not from `os.getcwd()`). So the
+   docs, Chroma DB, manifests, `.env`, and chat history always live in the
+   project folder — launching from `~/school/proj` reads and writes the same
+   index as launching from the repo. The current directory is never used for
+   state, which is why the test suite can assert a foreign launch directory
+   stays byte-for-byte empty.
+3. **Only the agent follows you.** The one thing that *should* depend on
+   where you are is which code the `/agent` tools look at. That defaults to
+   your current directory, and `lca --root <path>` (or `/agent root <path>`
+   mid-chat) points it somewhere else. Changing root starts a fresh agent
+   session so context from one repo never leaks into another.
+
+So: RAG knowledge is global-and-shared (one index, wherever you are), agent
+context is local-and-disposable (per directory, per session). `lca doctor`
+prints both halves so you can see exactly what a given terminal will use.
+
+### When to use this vs the Claude Code harness on a local model
+
+The tempting alternative: keep the local model but borrow the grown-up
+harness — run Claude Code pointed at Ollama through an Anthropic-API
+translation proxy (e.g. LiteLLM) via `ANTHROPIC_BASE_URL`. It works, but
+it's a mismatch, because a harness is *tuned to a model class*:
+
+- **Prompt weight.** Claude Code front-loads a system prompt plus 15+ tool
+  schemas — tens of thousands of tokens before your question. Small models
+  degrade sharply past ~8 tools (the reason this repo caps its MCP loadout),
+  and at local tok/s you pay that prompt tax every single turn.
+- **Loop assumptions.** Claude Code's long multi-step turns, subagents, and
+  recovery behavior assume the model can plan and self-correct. A 14B model
+  inside that loop tends to thrash: wrong tool, malformed call, retry, drift.
+- **This harness is shaped for small models on purpose.** Tiny prompt, ≤8
+  tools, retrieval doing the heavy lifting so the model mostly has to read
+  the right chunk and phrase an answer — that's the regime where a small
+  model is actually good.
+
+So the working split: **frontier model → Claude Code harness; local model →
+a small-model harness like this one.** Mixing them (big harness, small
+model) mostly buys friction. Where `lca` earns its keep regardless: it's
+free and private (nothing leaves the LAN), it answers from the exact doc
+versions you ingested with citations instead of training-data recall, and
+it's a glass box you can take apart — which is the point of this project.
+
+A larger local model (e.g. a 14B coder on the PC) raises this harness's
+ceiling and is worth trying — set `OLLAMA_CHAT_MODEL` and check tool-calling
+still works — the architecture stays the same, the answers get better.
+
 Install Ollama from:
 
 ```text
