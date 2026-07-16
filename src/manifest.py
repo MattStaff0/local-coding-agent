@@ -5,19 +5,27 @@ the full corpus out of Chroma. Rebuilt from the collection after every
 ingest; written atomically so a crash mid-write cannot leave a torn file.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 
 def write_manifest(records: list[dict[str, Any]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.stem}-", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
 
-    with open(tmp, "w", encoding="utf-8") as f:
-        for record in records:
-            f.write(json.dumps(record) + "\n")
-
-    tmp.replace(path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for record in records:
+                f.write(json.dumps(record) + "\n")
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_manifest(path: Path) -> list[dict[str, Any]]:

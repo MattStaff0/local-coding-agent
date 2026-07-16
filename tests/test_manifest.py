@@ -1,4 +1,5 @@
 """The manifest sidecar: retrieval's lexical index, rebuilt on every ingest."""
+import threading
 from pathlib import Path
 
 import manifest
@@ -25,6 +26,35 @@ def test_write_manifest_creates_parent_directory(tmp_path):
     manifest.write_manifest([{"id": "a-0"}], path)
 
     assert manifest.load_manifest(path) == [{"id": "a-0"}]
+
+
+def test_concurrent_manifest_writes_do_not_collide(tmp_path, monkeypatch):
+    path = tmp_path / "manifest.jsonl"
+    original_replace = Path.replace
+    barrier = threading.Barrier(2)
+
+    def synchronized_replace(self, target):
+        barrier.wait(timeout=1)
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", synchronized_replace)
+    errors = []
+
+    def write(records):
+        try:
+            manifest.write_manifest(records, path)
+        except Exception as error:
+            errors.append(error)
+
+    first = threading.Thread(target=write, args=([{"id": "first"}],))
+    second = threading.Thread(target=write, args=([{"id": "second"}],))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    assert not errors
+    assert manifest.load_manifest(path) in ([{"id": "first"}], [{"id": "second"}])
 
 
 def test_ingest_rebuilds_manifest(tmp_path, monkeypatch):
