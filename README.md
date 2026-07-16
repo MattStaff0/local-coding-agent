@@ -433,6 +433,12 @@ CLI prints a grounding warning but does not rerun or reject the answer.
 /agent root <path>    point the agent at another repo (starts a fresh session)
 ```
 
+The agent can also consult the ingested library documentation mid-loop with
+`search_docs(query, source?)` — the same hybrid retrieval as plain chat, so
+"why does this line of my code misuse pandas" can pull the pandas docs while
+reading your file. Failures (index not built, Ollama down) come back to the
+model as text, never crash the loop, and show as ERROR in the trace.
+
 The agent can also propose file edits (`edit_file`, `write_file`) and run
 allowlisted commands (`run_command`: only `pytest` and `python`). Every
 write or run shows a unified diff (or the command line) and asks
@@ -466,7 +472,9 @@ To add a server: add an entry with its launch command and a `"tools"`
 allowlist (tool names are namespaced `server_tool`). An optional
 `"confirm": [...]` list routes specific tools through the y/N gate. Keep the
 total loadout at 8 tools or fewer — small local models degrade sharply when
-choosing between more, and the CLI warns when a config exceeds it.
+choosing between more, and the CLI warns when a config exceeds it. The seven
+built-in tools already use most of that budget, so allowlist MCP tools one
+at a time.
 
 ## Code Indexing (`/code`)
 

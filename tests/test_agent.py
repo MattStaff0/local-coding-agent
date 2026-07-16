@@ -64,6 +64,7 @@ def test_every_schema_is_a_complete_function_definition() -> None:
         "list_files",
         "grep",
         "read_file",
+        "search_docs",
         "edit_file",
         "write_file",
         "run_command",
