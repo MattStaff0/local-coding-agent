@@ -11,6 +11,7 @@ import paths  # noqa: F401
 
 import ollama
 
+import rag
 from agent_tools import (
     apply_content,
     grep_files,
@@ -35,11 +36,14 @@ Tools:
 - list_files(subdir): see what files exist
 - grep(pattern, subdir): find where something is defined or used
 - read_file(path, start_line): read a file that matched
+- search_docs(query): look up the ingested library documentation
 
 Method: grep for a specific identifier first, read only the files that
-matched, then answer. Cite evidence as path:line. If two different searches
-find nothing, say what you could not find instead of guessing. Never invent
-file contents.
+matched, then answer. Use search_docs for library/API claims. For mixed questions,
+use both current project evidence and documentation. Cite file evidence as path:line
+and docs with the numbered [n] path § heading label returned by search_docs. If two
+different searches find nothing, say what you could not find instead of guessing.
+Never invent file contents.
 
 For code changes: use edit_file with the smallest unique old_text. The user
 approves or declines each change; a declined change is an answer, not an error.
@@ -157,6 +161,27 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "search_docs",
+            "description": "Search the ingested library documentation (numpy, pandas, ...) and return the most relevant passages with their sources.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to look up, like 'how does broadcasting work'.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Limit to one documentation source, like 'numpy'. Omit to search all.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_command",
             "description": "Run pytest or python in the project root; the user approves each run.",
             "parameters": {
@@ -172,6 +197,44 @@ TOOL_SCHEMAS = [
         },
     },
 ]
+
+
+def search_docs(query: str, source: str | None = None) -> str:
+    """Fetch the top documentation chunks for a query, labeled with sources.
+
+    This is the bridge between the two halves of the project: the agent loop
+    (which reads the user's code) gets to consult the RAG index (which holds
+    the library docs) mid-thought. Same hybrid retrieval as plain chat.
+    """
+    try:
+        results = rag.retrieve(query, n_results=3, source=source)
+    except Exception as error:
+        # Anything can fail here (Ollama down for the embedding, index not
+        # built, Chroma unhappy). A raised exception would abort the whole
+        # agent turn; text keeps the loop alive and marks the trace ERROR.
+        return f"Tool error: docs search unavailable ({error})"
+
+    documents = results["documents"][0]
+    metadatas = results["metadatas"][0]
+
+    if not documents:
+        return (
+            "No documentation matched. Try different keywords, "
+            "or answer from the code alone."
+        )
+
+    if rag.would_refuse(results):
+        return (
+            "No relevant documentation matched. Try different keywords, "
+            "or answer from the code alone."
+        )
+
+    return "\n\n".join(
+        f"{rag.chunk_label(number, metadata)}\n{document}"
+        for number, (document, metadata) in enumerate(
+            zip(documents, metadatas), start=1
+        )
+    )
 
 
 def _gated_write(
@@ -215,6 +278,9 @@ def dispatch_tool(
         if name == "read_file":
             return read_file(root, arguments["path"], int(arguments.get("start_line", 1)))
 
+        if name == "search_docs":
+            return search_docs(arguments["query"], arguments.get("source"))
+
         if name == "edit_file":
             preview = preview_edit(
                 root, arguments["path"], arguments["old_text"], arguments["new_text"]
@@ -239,7 +305,7 @@ def dispatch_tool(
 
     return (
         f"Unknown tool '{name}'. Available: list_files, grep, read_file, "
-        "edit_file, write_file, run_command."
+        "search_docs, edit_file, write_file, run_command."
     )
 
 
