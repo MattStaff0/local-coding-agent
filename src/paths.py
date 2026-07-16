@@ -35,6 +35,8 @@ def _load_env_file(path: Path) -> None:
 # may be defined inside it.
 _load_env_file(_REPO_ROOT / ".env")
 
+ENV_FILE = _REPO_ROOT / ".env"
+
 PROJECT_ROOT = Path(os.getenv("LCA_HOME", _REPO_ROOT))
 
 DOCS_DIR = PROJECT_ROOT / "docs"

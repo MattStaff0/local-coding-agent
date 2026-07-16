@@ -113,8 +113,11 @@ variable already exported in your shell always beats the file.
 - persists chat history across sessions (`chat_history.json`)
 - prints a citation legend mapping each `[n]` in the answer to `file § heading`
 - supports `/sources` and `/source <name>` to scope answers to one source
-- `/agent <question>` searches this codebase live with the tool-calling agent
+- `/agent <question>` searches a codebase live with the tool-calling agent —
+  the repo you launched from by default, `--root`/`/agent root` to retarget
 - `/export` saves the last answer + citations as a markdown study note
+- `lca doctor` prints project home, `.env` state, Ollama host, models, and
+  index status without touching the network — run it first when things break
 
 `src/agent.py` + `src/agent_tools.py` are the tool-calling agent:
 
@@ -179,20 +182,62 @@ pip install -r requirements.txt
 
 ### Install the `lca` command
 
-An editable install adds an `lca` console command that works from any
-directory — data paths (docs, index, chat history) always resolve to this
-project via `src/paths.py`, so running `lca` from another folder never
-creates a stray `chroma_db/` there:
+An editable install adds `lca`, `lca-fetch-docs`, `lca-ingest`, and
+`lca-ingest-code` console commands that work from any directory — data paths
+(docs, index, chat history) always resolve to this project via
+`src/paths.py`, so running `lca` from another folder never creates a stray
+`chroma_db/` there:
 
 ```bash
 pip install -e .
-lca                      # interactive chat from anywhere
+lca                      # interactive chat from anywhere (venv active)
 lca "How do RNNs work?"  # one-shot question
+lca doctor               # where everything lives + model config, no network
+lca --root ~/school/proj # chat with the agent pointed at another repo
 ```
 
 Packaging note: the project installs the flat `src/*.py` modules top-level
 (`rag`, `ask`, `ui`, …) rather than as a package — renaming to a package
 would churn every import in the repo for zero behavior change.
+
+### Run it from anywhere (macOS, like `claude` or `codex`)
+
+The venv commands above only exist while the venv is activated. For a
+persistent command in every new terminal, install thin launchers into
+`~/.local/bin` (one-time):
+
+```bash
+cd ~/Desktop/local-coding-agent
+[ -x .venv/bin/python ] || { echo "run this from the repo root (no .venv here)"; exit 1; }
+mkdir -p ~/.local/bin
+for pair in "lca:ask" "lca-fetch-docs:fetch_docs" "lca-ingest:ingest" "lca-ingest-code:ingest_code"; do
+  cmd="${pair%%:*}"; mod="${pair##*:}"
+  printf '#!/bin/sh\nexec "%s/.venv/bin/python" "%s/src/%s.py" "$@"\n' "$PWD" "$PWD" "$mod" > ~/.local/bin/"$cmd"
+  chmod +x ~/.local/bin/"$cmd"
+done
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+Open a new terminal and `lca` works from any directory. `lca doctor` is the
+health check: project home, `.env`, Ollama host, models, and index status.
+
+Why launcher scripts instead of symlinking the venv console scripts: on this
+Mac something (likely iCloud Desktop sync) sets the macOS *hidden* file flag
+on `.pth` files inside the venv, and Python ≥ 3.12 silently skips hidden
+`.pth` files — which breaks the editable install's import path and makes
+`lca` die with `ModuleNotFoundError: No module named 'ask'`. The launchers
+run `python src/ask.py` directly, which needs no `.pth` at all. If the venv
+`lca` ever shows that error, that's the cause (`chflags nohidden` fixes it
+until the flag comes back).
+
+Heads-up: in a shell with the venv activated, the venv's own `lca` console
+script shadows these launchers (`.venv/bin` lands first on PATH). If `lca`
+fails with `ModuleNotFoundError` only in venv shells, that's why —
+`deactivate` (or `hash -r`) and check `which lca`.
+
+Working on two repos with two independent doc/code indexes? Set `LCA_HOME`
+to a second data directory in that shell (or a second launcher) — all
+generated state (docs, chroma_db, manifests, history) follows it.
 
 Install Ollama from:
 
