@@ -25,8 +25,13 @@ def test_search_docs_is_registered_within_the_tool_cap():
     assert len(names) <= 8
 
 
-def test_system_prompt_tells_the_model_about_search_docs():
-    assert "search_docs" in agent.SYSTEM_PROMPT
+def test_system_prompt_requires_grounded_mixed_evidence():
+    prompt = agent.SYSTEM_PROMPT
+
+    assert "library/API claims" in prompt
+    assert "mixed questions" in prompt
+    assert "file evidence as path:line" in prompt
+    assert "numbered [n] path § heading label" in prompt
 
 
 def test_dispatch_search_docs_returns_labeled_chunks(monkeypatch, tmp_path):
@@ -156,3 +161,179 @@ def test_run_agent_can_answer_via_search_docs(monkeypatch, tmp_path):
 
     assert "Broadcasting" in answer
     assert any("search_docs" in step and "ERROR" not in step for step in trace)
+
+
+def test_run_agent_combines_live_file_and_docs_evidence(monkeypatch, tmp_path):
+    (tmp_path / "app.py").write_text(
+        "import pandas as pd\nresult = pd.concat([])\n", encoding="utf-8"
+    )
+    seen = {}
+
+    def fake_retrieve(query, n_results=4, source=None, **kwargs):
+        seen["query"] = query
+        seen["source"] = source
+        return _retrieval(
+            ["concat combines pandas objects."],
+            [
+                {
+                    "path": "docs/pandas/merging.md",
+                    "heading": "Concatenating objects",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(rag, "retrieve", fake_retrieve)
+    responses = iter(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {"path": "app.py"},
+                            }
+                        }
+                    ],
+                }
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "search_docs",
+                                "arguments": {
+                                    "query": "pandas concat empty inputs",
+                                    "source": "pandas",
+                                },
+                            }
+                        }
+                    ],
+                }
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "The call is at app.py:2; compare it with "
+                        "[1] docs/pandas/merging.md § Concatenating objects."
+                    ),
+                }
+            },
+        ]
+    )
+    model_calls = []
+
+    def fake_chat(**kwargs):
+        model_calls.append(kwargs["messages"])
+        return next(responses)
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+
+    answer, trace = agent.run_agent(
+        "Why does the pandas call in app.py fail?", root=tmp_path
+    )
+
+    assert seen == {"query": "pandas concat empty inputs", "source": "pandas"}
+    assert [entry.split("(", 1)[0] for entry in trace] == [
+        "read_file",
+        "search_docs",
+    ]
+    assert all("ERROR" not in entry for entry in trace)
+    final_messages = model_calls[-1]
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_name") == "read_file"
+        and "2: result = pd.concat([])" in message["content"]
+        for message in final_messages
+    )
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_name") == "search_docs"
+        and "[1] docs/pandas/merging.md § Concatenating objects"
+        in message["content"]
+        for message in final_messages
+    )
+    assert "app.py:2" in answer
+    assert "[1] docs/pandas/merging.md § Concatenating objects" in answer
+
+
+def test_docs_failure_does_not_abort_live_file_reasoning(monkeypatch, tmp_path):
+    (tmp_path / "app.py").write_text("answer = 42\n", encoding="utf-8")
+
+    def broken_retrieve(*args, **kwargs):
+        raise RuntimeError("collection does not exist")
+
+    monkeypatch.setattr(rag, "retrieve", broken_retrieve)
+    responses = iter(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "search_docs",
+                                "arguments": {"query": "meaning of answer"},
+                            }
+                        }
+                    ],
+                }
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {"path": "app.py"},
+                            }
+                        }
+                    ],
+                }
+            },
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "Documentation was unavailable, but app.py:1 sets answer to 42."
+                    ),
+                }
+            },
+        ]
+    )
+    model_calls = []
+
+    def fake_chat(**kwargs):
+        model_calls.append(kwargs["messages"])
+        return next(responses)
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+
+    answer, trace = agent.run_agent("Explain answer", root=tmp_path)
+
+    assert trace[0].startswith("search_docs(") and trace[0].endswith("-> ERROR")
+    assert trace[1].startswith("read_file(") and "ERROR" not in trace[1]
+    final_messages = model_calls[-1]
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_name") == "search_docs"
+        and message["content"].startswith("Tool error: docs search unavailable")
+        for message in final_messages
+    )
+    assert any(
+        message.get("role") == "tool"
+        and message.get("tool_name") == "read_file"
+        and "1: answer = 42" in message["content"]
+        for message in final_messages
+    )
+    assert "Documentation was unavailable" in answer
+    assert "app.py:1" in answer

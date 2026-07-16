@@ -116,7 +116,7 @@ def test_failed_tool_calls_are_marked_in_the_trace(tmp_path, monkeypatch):
 
 
 def test_over_cap_loadout_warns_once(tmp_path, monkeypatch, capsys):
-    extra = [f"srv_tool{i}" for i in range(4)]  # 6 native + 4 = 10 > 8
+    extra = [f"srv_tool{i}" for i in range(4)]  # 7 native + 4 = 11 > 8
     manager = _FakeManager(extra, {})
     _scripted_ollama(monkeypatch, [{"content": "ok", "tool_calls": []}])
 
