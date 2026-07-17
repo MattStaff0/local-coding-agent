@@ -33,14 +33,28 @@ def _read_toml(path: Path) -> dict:
         return {}
 
 
-def _lock_versions(root: Path) -> dict[str, str]:
-    """Exact pins from uv.lock / poetry.lock / requirements*.txt."""
+def _lock_versions(root: Path) -> tuple[dict[str, str], set[str]]:
+    """Exact pins from uv.lock / poetry.lock / requirements*.txt.
+
+    Returns (pins, conflicted). A distribution pinned to two different
+    versions across lock-grade files (dev requirements, uv multi-platform
+    resolutions) is ambiguous — file ordering must not pick the "winner",
+    so it is reported as conflicted and resolved to unknown.
+    """
     pins: dict[str, str] = {}
+    conflicted: set[str] = set()
+
+    def record(name: str, version: str) -> None:
+        key = _normalize(name)
+        if key in pins and pins[key] != version:
+            conflicted.add(key)
+        else:
+            pins.setdefault(key, version)
 
     for lock_name in ("uv.lock", "poetry.lock"):
         for package in _read_toml(root / lock_name).get("package", []):
             if isinstance(package, dict) and "name" in package and "version" in package:
-                pins.setdefault(_normalize(str(package["name"])), str(package["version"]))
+                record(str(package["name"]), str(package["version"]))
 
     for requirements in sorted(root.glob("requirements*.txt")):
         try:
@@ -52,9 +66,9 @@ def _lock_versions(root: Path) -> dict[str, str]:
                 r"^\s*([A-Za-z0-9._-]+)\s*==\s*([^\s;#]+)", line
             )
             if match:
-                pins.setdefault(_normalize(match[1]), match[2])
+                record(match[1], match[2])
 
-    return pins
+    return pins, conflicted
 
 
 def _constraint_versions(root: Path) -> dict[str, str]:
@@ -108,14 +122,16 @@ def detect_versions(
     root: Path, distributions: list[str]
 ) -> dict[str, DetectedVersion]:
     """Best available version per distribution, with its confidence source."""
-    locks = _lock_versions(root)
+    locks, conflicted = _lock_versions(root)
     constraints = _constraint_versions(root)
     installed = _installed_versions(root)
 
     found: dict[str, DetectedVersion] = {}
     for distribution in distributions:
         key = _normalize(distribution)
-        if key in locks:
+        if key in conflicted:
+            found[distribution] = DetectedVersion(None, "unknown")
+        elif key in locks:
             found[distribution] = DetectedVersion(locks[key], "lock")
         elif key in constraints:
             found[distribution] = DetectedVersion(constraints[key], "constraint")

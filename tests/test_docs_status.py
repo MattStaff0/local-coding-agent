@@ -138,3 +138,12 @@ def test_sync_unknown_source_exits_2(env, capsys):
 
     assert excinfo.value.code == 2
     assert "nope" in capsys.readouterr().out
+
+
+def test_sync_with_empty_registry_is_fatal(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(docs_cli, "SOURCES_FILE", tmp_path / "missing.yaml")
+
+    with pytest.raises(SystemExit) as excinfo:
+        docs_cli.sync(None)
+
+    assert excinfo.value.code == 2

@@ -117,6 +117,11 @@ def sync(source_name: str | None, max_age_days: int | None = 0) -> None:
     """Bounded explicit refresh of one source (or all), then re-index."""
     registry = _load_registry()
 
+    if not registry:
+        # "Synced nothing successfully" must not look like success.
+        print(f"No sources registry at {SOURCES_FILE} — nothing to sync.")
+        raise SystemExit(2)
+
     if source_name is not None and source_name not in registry:
         print(f"Unknown source '{source_name}'. "
               f"Available: {', '.join(registry) or 'none'}")

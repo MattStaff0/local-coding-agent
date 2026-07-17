@@ -304,14 +304,23 @@ def chunk_id_for(doc_file: Path, chunk_index: int, docs_dir: Path = DOCS_DIR) ->
     return f"{safe_path}-{chunk_index}"
 
 
+# Bumped when chunk metadata gains fields: incremental ingest skips
+# hash-matching files, so without this a pre-existing index would never
+# backfill new metadata (e.g. WS04 provenance) on unchanged docs.
+_METADATA_SCHEMA = "meta-v2"
+
+
 def _file_hash(text: str) -> str:
     """Fingerprint used to decide whether a doc needs re-embedding.
 
     The embedding model is part of the fingerprint: switching
     OLLAMA_EMBED_MODEL must re-embed every file, or the index would keep the
-    old model's vectors while queries use the new one.
+    old model's vectors while queries use the new one. The metadata schema
+    version is too, so schema upgrades force a one-time re-index.
     """
-    return hashlib.sha256(f"{EMBED_MODEL}\n{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"{EMBED_MODEL}\n{_METADATA_SCHEMA}\n{text}".encode("utf-8")
+    ).hexdigest()
 
 
 def _doc_provenance(text: str) -> dict[str, str]:
@@ -579,17 +588,21 @@ def rebuild_manifest(collection, path: Path | None = None) -> int:
     for item_id, document, metadata in zip(
         records["ids"], records["documents"], records["metadatas"]
     ):
-        rows.append(
-            {
-                "id": item_id,
-                "relative_path": metadata["relative_path"],
-                "source": metadata["source"],
-                "heading": metadata["heading"],
-                "file_hash": metadata["file_hash"],
-                "approx_tokens": len(document) // 4,
-                "tokens": _tokenize(document),
-            }
-        )
+        row = {
+            "id": item_id,
+            "relative_path": metadata["relative_path"],
+            "source": metadata["source"],
+            "heading": metadata["heading"],
+            "file_hash": metadata["file_hash"],
+            "approx_tokens": len(document) // 4,
+            "tokens": _tokenize(document),
+        }
+        # Provenance rides along so `lca docs status` (manifest-only, no
+        # Chroma) can report fetch age and docs version.
+        for key in ("url", "fetched", "docs_version"):
+            if key in metadata:
+                row[key] = metadata[key]
+        rows.append(row)
 
     manifest_module.write_manifest(rows, path)
     return len(rows)

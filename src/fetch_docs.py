@@ -10,9 +10,12 @@ import yaml
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+import paths
 from rag import DOCS_DIR
 
-SOURCES_FILE = Path("sources.yaml")
+# Anchored to the repo, not the cwd: `lca docs …` must find the registry
+# when launched from any target project (run-anywhere contract).
+SOURCES_FILE = paths.PROJECT_ROOT / "sources.yaml"
 REQUEST_TIMEOUT = 30
 # Some doc sites reject the default python-requests user agent.
 USER_AGENT = "local-coding-agent-docs-fetcher (personal RAG study tool)"
@@ -346,7 +349,7 @@ def probe_native_markdown(url: str) -> tuple[str, str] | None:
         return None
 
     try:
-        text = fetch_page(variant)
+        response = fetch_response(variant)
     except requests.HTTPError:
         # The designed miss: this site simply doesn't serve the convention.
         return None
@@ -356,13 +359,17 @@ def probe_native_markdown(url: str) -> tuple[str, str] | None:
         print(f"  markdown probe failed for {variant}: {error} — scraping HTML")
         return None
 
+    text = response.text
+
     # Heuristic: a leading "<" almost always means an HTML shell or error
     # page. A rare markdown file that opens with raw HTML is misclassified
     # and just falls back to HTML scraping.
     if text.lstrip().startswith("<"):
         return None
 
-    return variant, text
+    # Report where the content actually came from, so the caller can hold
+    # redirected probes to the same official-origin rule as scraped pages.
+    return getattr(response, "url", None) or variant, text
 
 
 def _unique_slug(url: str, taken: set[str]) -> str:
@@ -494,6 +501,13 @@ def fetch_source(
 
         if probe is not None:
             fetched_url, markdown = probe
+            if origins and _origin(fetched_url) not in origins:
+                # A probe that redirected off-origin is as untrusted as any
+                # other off-origin content.
+                print(f"  FAILED {url}: markdown probe redirected off "
+                      f"official origin ({fetched_url})")
+                failed.append(url)
+                continue
         else:
             fetched_url = url
             try:
@@ -508,11 +522,8 @@ def fetch_source(
                 continue
 
             if response is not None:
-                if response.status_code == 304:
-                    _touch_fetched(existing, date.today().isoformat())
-                    print(f"  {url} not modified — cache validated")
-                    continue
-
+                # Origin check comes before trusting ANYTHING about the
+                # response — including a 304's claim that our cache is valid.
                 final_url = response.url or url
                 if origins and _origin(final_url) not in origins:
                     # A redirect off the official origin is a rejected page,
@@ -520,6 +531,11 @@ def fetch_source(
                     print(f"  FAILED {url}: redirected off official origin "
                           f"({final_url})")
                     failed.append(url)
+                    continue
+
+                if response.status_code == 304:
+                    _touch_fetched(existing, date.today().isoformat())
+                    print(f"  {url} not modified — cache validated")
                     continue
 
                 html = response.text

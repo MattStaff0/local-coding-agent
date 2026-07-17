@@ -142,3 +142,14 @@ def test_malformed_lockfile_degrades_to_next_source(tmp_path):
 )
 def test_compatibility_states(project, docs, policy, expected):
     assert project_versions.compatibility(project, docs, policy) == expected
+
+
+def test_conflicting_lock_pins_report_unknown(tmp_path):
+    # Two lock-grade files disagreeing means file order would decide the
+    # "version" — ambiguity must surface as unknown, not confident wrongness.
+    (tmp_path / "requirements.txt").write_text("pandas==2.2.1\n")
+    (tmp_path / "requirements-dev.txt").write_text("pandas==2.3.0\n")
+
+    found = project_versions.detect_versions(tmp_path, ["pandas"])
+
+    assert found["pandas"] == DetectedVersion(None, "unknown")

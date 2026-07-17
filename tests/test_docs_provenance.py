@@ -1,4 +1,5 @@
 """Registry v2, fetch provenance, and version-labeled chunks (workstream 04)."""
+import json
 from pathlib import Path
 
 import pytest
@@ -214,3 +215,101 @@ def test_prepare_file_without_provenance_omits_the_keys(tmp_path, monkeypatch):
 
     assert "url" not in metadatas[0]
     assert "docs_version" not in metadatas[0]
+
+
+# --- review findings (codex, 2026-07-17) ---
+
+
+def test_probe_result_from_off_origin_redirect_is_rejected(tmp_path, monkeypatch):
+    config = numpy_config()
+    monkeypatch.setattr(
+        fetch_docs,
+        "probe_native_markdown",
+        lambda url: ("https://evil.example.com/quickstart.md", "# evil markdown"),
+    )
+
+    written, failed = fetch_docs.fetch_source("numpy", config, docs_dir=tmp_path)
+
+    assert written == []
+    assert failed == config["pages"]
+
+
+def test_304_from_off_origin_redirect_does_not_validate_cache(
+    tmp_path, monkeypatch
+):
+    config = numpy_config()
+    existing = tmp_path / "numpy" / "quickstart.md"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        '---\nurl: x\nfetched: 2020-01-01\netag: "abc"\n---\n\ncached\n'
+    )
+
+    monkeypatch.setattr(
+        fetch_docs.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(
+            "", status_code=304, url="https://evil.example.com/q"
+        ),
+    )
+    monkeypatch.setattr(fetch_docs, "probe_native_markdown", lambda url: None)
+
+    _, failed = fetch_docs.fetch_source(
+        "numpy", config, docs_dir=tmp_path, max_age_days=0
+    )
+
+    assert failed == config["pages"]
+    assert "fetched: 2020-01-01" in existing.read_text()  # NOT touched
+
+
+def test_sources_file_is_anchored_to_project_root_not_cwd():
+    import paths
+
+    assert fetch_docs.SOURCES_FILE.is_absolute()
+    assert fetch_docs.SOURCES_FILE == paths.PROJECT_ROOT / "sources.yaml"
+
+
+def test_rebuild_manifest_carries_provenance(tmp_path):
+    class FakeCollection:
+        def get(self, include):
+            return {
+                "ids": ["a-0", "b-0"],
+                "documents": ["versioned chunk", "plain chunk"],
+                "metadatas": [
+                    {
+                        "relative_path": "pandas/x.md",
+                        "source": "pandas",
+                        "heading": "H",
+                        "file_hash": "h1",
+                        "url": "https://pandas.pydata.org/docs/x.html",
+                        "fetched": "2026-07-01",
+                        "docs_version": "3.0",
+                    },
+                    {
+                        "relative_path": "notes/y.md",
+                        "source": "notes",
+                        "heading": "H",
+                        "file_hash": "h2",
+                    },
+                ],
+            }
+
+    count = rag.rebuild_manifest(FakeCollection(), path=tmp_path / "m.jsonl")
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "m.jsonl").read_text().splitlines()
+    ]
+    assert count == 2
+    assert records[0]["docs_version"] == "3.0"
+    assert records[0]["fetched"] == "2026-07-01"
+    assert "docs_version" not in records[1]
+
+
+def test_file_hash_includes_metadata_schema_version():
+    # Bumping the schema must re-embed (and re-metadata) every file once, so
+    # a pre-WS04 index cannot keep hash-matching while lacking provenance.
+    import hashlib
+
+    legacy = hashlib.sha256(f"{rag.EMBED_MODEL}\nsome text".encode()).hexdigest()
+
+    assert rag._file_hash("some text") != legacy
