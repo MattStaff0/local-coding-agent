@@ -103,3 +103,41 @@ def test_list_files_skips_gitignored_files(tmp_path):
 
     assert "generated.py" not in result
     assert "real.py" in result
+
+
+# --- review findings (codex, 2026-07-16): nested/anchored dir patterns ---
+
+
+def test_ignored_nested_directory_pattern(tmp_path):
+    (tmp_path / ".gitignore").write_text("generated/cache/\n")
+
+    assert fs_policy.ignored(tmp_path, Path("generated/cache/x.py"))
+    assert not fs_policy.ignored(tmp_path, Path("generated/other/x.py"))
+
+
+def test_ignored_root_anchored_directory_pattern(tmp_path):
+    (tmp_path / ".gitignore").write_text("/build/\n")
+
+    assert fs_policy.ignored(tmp_path, Path("build/gen.py"))
+
+
+def test_read_file_refuses_denied_files(tmp_path):
+    import agent_tools
+
+    (tmp_path / ".env").write_text("KEY=supersecret\n")
+
+    result = agent_tools.read_file(tmp_path, ".env")
+
+    assert "supersecret" not in result
+    assert "deny" in result
+
+
+def test_edit_preview_refuses_denied_files(tmp_path):
+    import agent_tools
+
+    (tmp_path / "key.pem").write_text("PRIVATE KEY MATERIAL\n")
+
+    preview = agent_tools.preview_edit(tmp_path, "key.pem", "PRIVATE", "PUBLIC")
+
+    assert "error" in preview
+    assert "PRIVATE KEY MATERIAL" not in str(preview.get("diff", ""))

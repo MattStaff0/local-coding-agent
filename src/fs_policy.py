@@ -82,13 +82,19 @@ def ignored(root: Path, relative: Path) -> bool:
     posix = relative.as_posix()
     for pattern in _gitignore_patterns(root):
         if pattern.endswith("/"):
-            # Directory pattern: matches when any path component matches it.
-            directory = pattern.rstrip("/")
-            if any(fnmatch.fnmatch(part, directory) for part in relative.parts):
+            directory = pattern.strip("/")
+            if "/" in directory:
+                # Nested dir pattern ("generated/cache/") anchors to the root.
+                if posix == directory or posix.startswith(directory + "/"):
+                    return True
+            elif any(fnmatch.fnmatch(part, directory) for part in relative.parts):
+                # Bare dir pattern ("build/") matches at any depth, like git.
                 return True
-        elif fnmatch.fnmatch(relative.name, pattern) or fnmatch.fnmatch(
-            posix, pattern
-        ):
-            return True
+        else:
+            name_pattern = pattern.lstrip("/")
+            if fnmatch.fnmatch(relative.name, name_pattern) or fnmatch.fnmatch(
+                posix, name_pattern
+            ):
+                return True
 
     return False

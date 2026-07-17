@@ -11,6 +11,7 @@ user message, so the model sees current saved content with no indexing step.
 """
 import fnmatch
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,14 +19,20 @@ from pathlib import Path
 import fs_policy
 
 MAX_ATTACH_BYTES = 256 * 1024
+# Absolute ceiling even for range attachments: slicing needs the whole read.
+HARD_CAP_BYTES = 5 * 1024 * 1024
+# Cap on everything rendered into one turn, across all attachments — a local
+# model's context dies quietly when the prompt outgrows it.
+MAX_RENDER_CHARS = 20_000
 NOTEBOOK_OUTPUT_CAP = 500
 
 # Punctuation that is prose, not path: "look at @src/train.py, please".
 _TRAILING_PUNCT = ",.;?!)]}\"'"
 
+# (?<!\S): an @ glued to preceding text is an email/handle, never a path.
 _TOKEN = re.compile(
-    r"""@(?:"(?P<dquoted>[^"]+)"|'(?P<squoted>[^']+)'|(?P<bare>\S+))"""
-    r"""(?(dquoted)(?::(?P<qrange>\d+(?:-\d+)?))?)"""
+    r"""(?<!\S)@(?:(?:"(?P<dquoted>[^"]+)"|'(?P<squoted>[^']+)')"""
+    r"""(?::(?P<qrange>\d+(?:-\d+)?))?|(?P<bare>\S+))"""
 )
 _RANGE_SUFFIX = re.compile(r"^(?P<path>.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$")
 
@@ -106,7 +113,7 @@ def parse_attachments(text: str, exists) -> tuple[str, list[AttachmentSpec]]:
         quoted = match["dquoted"] or match["squoted"]
         if quoted is not None:
             candidate = quoted
-            if match.groupdict().get("qrange"):
+            if match["qrange"]:
                 start_text = match["qrange"]
                 start, _, end_text = start_text.partition("-")
                 start, end = int(start), int(end_text) if end_text else int(start)
@@ -142,10 +149,19 @@ def parse_attachments(text: str, exists) -> tuple[str, list[AttachmentSpec]]:
     cleaned_parts: list[str] = []
     cursor = 0
     for start_index, end_index in removals:
+        # Absorb one trailing space at the removal seam so "a @f.py b" reads
+        # "a b" — but never touch whitespace elsewhere: multiline questions
+        # keep their newlines and indentation intact.
+        if (
+            end_index < len(text)
+            and text[end_index] == " "
+            and (start_index == 0 or text[start_index - 1] in " \n")
+        ):
+            end_index += 1
         cleaned_parts.append(text[cursor:start_index])
         cursor = end_index
     cleaned_parts.append(text[cursor:])
-    cleaned = " ".join("".join(cleaned_parts).split())
+    cleaned = "".join(cleaned_parts).strip()
 
     if not cleaned:
         raise AttachmentError(
@@ -208,6 +224,14 @@ def prepare_turn(
         f"Attached file: {attachment.label}\n{attachment.content}"
         for attachment in resolved
     ]
+
+    total = sum(len(block) for block in blocks)
+    if total > MAX_RENDER_CHARS:
+        raise AttachmentError(
+            f"Attachments too large together ({total} chars; cap "
+            f"{MAX_RENDER_CHARS}) — attach fewer files or narrower ranges."
+        )
+
     question = "\n\n".join(blocks) + f"\n\nQuestion: {clean}"
     return PreparedTurn(question=question, labels=[a.label for a in resolved])
 
@@ -256,7 +280,14 @@ def _resolve_target(root: Path, spec: AttachmentSpec) -> tuple[Path, str]:
         raise AttachmentError(f"{spec.path}: not attachable ({reason})")
 
     size = target.stat().st_size
-    if size > MAX_ATTACH_BYTES:
+    if size > HARD_CAP_BYTES:
+        raise AttachmentError(
+            f"{spec.path}: too large ({size // 1024} KB; hard cap "
+            f"{HARD_CAP_BYTES // 1024} KB)"
+        )
+    if spec.start is None and size > MAX_ATTACH_BYTES:
+        # A range is still allowed: slicing a big file is the whole point of
+        # the hint, so the whole-file cap must not block it.
         raise AttachmentError(
             f"{spec.path}: too large ({size // 1024} KB; cap "
             f"{MAX_ATTACH_BYTES // 1024} KB) — attach a line range instead"
@@ -266,8 +297,16 @@ def _resolve_target(root: Path, spec: AttachmentSpec) -> tuple[Path, str]:
 
 
 def _read_text_strict(target: Path, display: str) -> str:
-    data = target.read_bytes()
-    if b"\x00" in data[:1024]:
+    # O_NOFOLLOW: the path was symlink-free when we validated it; refuse to
+    # follow one swapped in between validation and read (TOCTOU hardening).
+    try:
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise AttachmentError(f"{display}: cannot read ({error})")
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read()
+
+    if b"\x00" in data:
         raise AttachmentError(f"{display}: binary or non-UTF-8 content")
     try:
         return data.decode("utf-8")
@@ -307,6 +346,12 @@ def resolve_attachment(root: Path, spec: AttachmentSpec) -> Attachment:
 def _cell_output_lines(outputs: list[dict]) -> list[str]:
     lines: list[str] = []
     for output in outputs:
+        if output.get("output_type") == "error":
+            # The exception is usually WHY the user attached the notebook.
+            ename = output.get("ename", "Error")
+            evalue = output.get("evalue", "")
+            lines.append(f"   error: {ename}: {evalue}".rstrip(": "))
+            continue
         text = output.get("text")
         if text is None and isinstance(output.get("data"), dict):
             data = output["data"]

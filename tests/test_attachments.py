@@ -320,3 +320,95 @@ class TestNotebook:
             attachments.resolve_attachment(
                 tmp_path, AttachmentSpec("lesson.ipynb", None, None)
             )
+
+
+# --- review findings (codex, 2026-07-16) ---
+
+
+class TestReviewFindings:
+    def test_email_address_never_attaches(self, root):
+        clean, specs = attachments.parse_attachments(
+            "email dev@src/train.py please", lambda p: p == "src/train.py"
+        )
+
+        assert specs == []
+        assert clean == "email dev@src/train.py please"
+
+    def test_single_and_double_quoted_ranges_have_parity(self):
+        exists = lambda p: p == "my file.py"
+
+        _, double = attachments.parse_attachments('q @"my file.py":10?', exists)
+        _, single = attachments.parse_attachments("q @'my file.py':10?", exists)
+
+        assert double == single == [AttachmentSpec("my file.py", 10, 10)]
+
+    def test_multiline_question_keeps_newlines(self):
+        text = "@a.py why does this fail:\n\n    x = [1,\n         2]\nsee above?"
+        clean, specs = attachments.parse_attachments(text, lambda p: p == "a.py")
+
+        assert specs == [AttachmentSpec("a.py", None, None)]
+        assert "\n\n    x = [1,\n         2]\nsee above?" in clean
+
+    def test_range_attaches_from_oversized_file(self, root):
+        big = root / "big.py"
+        big.write_text(
+            "\n".join(f"row {n}" for n in range(1, 40_000)) + "\n"
+        )
+        assert big.stat().st_size > attachments.MAX_ATTACH_BYTES
+
+        attachment = attachments.resolve_attachment(
+            root, AttachmentSpec("big.py", 5, 7)
+        )
+
+        assert attachment.content.splitlines() == ["5: row 5", "6: row 6", "7: row 7"]
+
+    def test_whole_file_of_oversized_still_rejected_with_range_hint(self, root):
+        big = root / "big.py"
+        big.write_text("x" * (attachments.MAX_ATTACH_BYTES + 1))
+
+        with pytest.raises(AttachmentError, match="range"):
+            attachments.resolve_attachment(root, AttachmentSpec("big.py", None, None))
+
+    def test_aggregate_rendered_size_is_capped(self, root):
+        for index in range(6):
+            (root / f"chunk{index}.py").write_text(
+                "\n".join("y" * 80 for _ in range(120)) + "\n"
+            )
+
+        prompt = " ".join(f"@chunk{index}.py" for index in range(6)) + " why?"
+
+        with pytest.raises(AttachmentError, match="together"):
+            attachments.prepare_turn(root, prompt)
+
+    def test_nul_byte_late_in_file_is_still_binary(self, root):
+        blob = root / "late.py"
+        blob.write_bytes(b"a" * 5000 + b"\x00" + b"b" * 10)
+
+        with pytest.raises(AttachmentError, match="binary or non-UTF-8"):
+            attachments.resolve_attachment(root, AttachmentSpec("late.py", None, None))
+
+    def test_notebook_error_output_rendered(self, tmp_path):
+        (tmp_path / "lesson.ipynb").write_text(
+            notebook_json(
+                [
+                    {
+                        "cell_type": "code",
+                        "source": ["1/0\n"],
+                        "outputs": [
+                            {
+                                "output_type": "error",
+                                "ename": "ZeroDivisionError",
+                                "evalue": "division by zero",
+                                "traceback": ["Traceback...", "ZeroDivisionError"],
+                            }
+                        ],
+                    }
+                ]
+            )
+        )
+
+        attachment = attachments.resolve_attachment(
+            tmp_path, AttachmentSpec("lesson.ipynb", None, None)
+        )
+
+        assert "ZeroDivisionError: division by zero" in attachment.content

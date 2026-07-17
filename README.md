@@ -559,9 +559,9 @@ and otherwise use exactly the same session, streaming, source scope, MCP tools,
 history, export, and confirmation gates as a plain question. Both aliases are
 scheduled for removal after one documented release.
 
-Explicit `@path` attachments, line ranges, notebooks, and `--context` are not
-implemented yet; those interfaces belong to the next workstream. Terminal mode
-currently sees saved files through the live root-sandboxed tools.
+Explicit `@path` attachments, line ranges, notebooks, and `--context` are
+implemented — see "Attach files with @path" above. Terminal mode sees saved
+files only, through the live root-sandboxed tools.
 
 ## When to Reingest
 

@@ -26,6 +26,15 @@ def _resolve_inside(root: Path, relative: str) -> Path:
     return target
 
 
+def _deny_reason(root: Path, target: Path) -> str | None:
+    """The fs_policy deny reason for a resolved in-root path, if any.
+
+    Applied to reads AND writes: the deny list is how secrets stay out of
+    the model's context, and writing .env through the agent is equally out.
+    """
+    return fs_policy.denied(target.relative_to(root.resolve()))
+
+
 def _iter_text_files(root: Path, base: Path):
     """Yield searchable text files under base, per the shared fs policy."""
     for path in sorted(base.rglob("*")):
@@ -105,6 +114,10 @@ def read_file(root: Path, path: str, start_line: int = 1) -> str:
     if not target.is_file():
         return f"No such file: {path}"
 
+    reason = _deny_reason(root, target)
+    if reason:
+        return f"{path} is not readable ({reason})."
+
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     picked: list[str] = []
     used = 0
@@ -143,6 +156,10 @@ def preview_edit(root: Path, path: str, old_text: str, new_text: str) -> dict:
     if not target.is_file():
         return {"error": f"No such file: {path}"}
 
+    reason = _deny_reason(root, target)
+    if reason:
+        return {"error": f"{path} is not editable ({reason})."}
+
     content = target.read_text(encoding="utf-8")
     count = content.count(old_text)
 
@@ -162,12 +179,18 @@ def preview_edit(root: Path, path: str, old_text: str, new_text: str) -> dict:
 
 def preview_write(root: Path, path: str, content: str) -> dict:
     target = _resolve_inside(root, path)
+    reason = _deny_reason(root, target)
+    if reason:
+        return {"error": f"{path} is not writable ({reason})."}
     old = target.read_text(encoding="utf-8") if target.is_file() else ""
     return {"diff": _unified_diff(path, old, content), "new_content": content}
 
 
 def apply_content(root: Path, path: str, new_content: str) -> str:
     target = _resolve_inside(root, path)
+    reason = _deny_reason(root, target)
+    if reason:
+        raise ValueError(f"{path} is not writable ({reason}).")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_content, encoding="utf-8")
     return f"Wrote {path}"
