@@ -250,14 +250,18 @@ def test_chat_loop_wires_history_and_export(
 ) -> None:
     monkeypatch.setattr(ask, "HISTORY_FILE", tmp_path / "history.json")
     monkeypatch.setattr(ask, "EXPORT_DIR", tmp_path / "notes")
-    monkeypatch.setattr(
-        ask,
-        "answer_question",
-        lambda q, history, source, on_token=None: (
-            "an answer [1]",
-            [{"path": "docs/pytorch/t.md", "heading": "T", "source": "pytorch"}],
-        ),
-    )
+    def fake_run_agent(question, session=None, on_token=None, **kwargs):
+        on_token("an answer [1]")
+        session.messages.extend(
+            [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": "an answer [1]"},
+            ]
+        )
+        return "an answer [1]", []
+
+    monkeypatch.setattr(ask, "run_agent", fake_run_agent)
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)
 
     lines = iter(["/export", "a question", "/export", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
@@ -268,7 +272,7 @@ def test_chat_loop_wires_history_and_export(
     assert "Nothing to export yet" in out          # /export before any answer
     assert "Saved study note:" in out              # /export after the answer
 
-    saved = json.loads((tmp_path / "history.json").read_text(encoding="utf-8"))
+    saved = ask.load_history(tmp_path / "history.json", root=Path.cwd().resolve())
     assert [m["role"] for m in saved] == ["user", "assistant"]
 
     notes = list((tmp_path / "notes").glob("*.md"))

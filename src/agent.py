@@ -315,6 +315,40 @@ class AgentSession:
 
     root: Path
     messages: list[Any] = field(default_factory=list)
+    docs_source: str | None = None
+
+
+def _chat_once(messages: list[Any], tools: list[dict], on_token=None) -> dict:
+    """Run one model iteration, optionally streaming it into one message."""
+    if on_token is None:
+        return ollama.chat(
+            model=AGENT_MODEL,
+            messages=messages,
+            tools=tools,
+        )["message"]
+
+    content_parts: list[str] = []
+    tool_calls: list[Any] = []
+    role = "assistant"
+
+    for chunk in ollama.chat(
+        model=AGENT_MODEL,
+        messages=messages,
+        tools=tools,
+        stream=True,
+    ):
+        message = chunk["message"]
+        role = message.get("role", role)
+        content = message.get("content") or ""
+        if content:
+            content_parts.append(content)
+            on_token(content)
+        tool_calls.extend(message.get("tool_calls") or [])
+
+    combined = {"role": role, "content": "".join(content_parts)}
+    if tool_calls:
+        combined["tool_calls"] = tool_calls
+    return combined
 
 
 def run_agent(
@@ -324,6 +358,7 @@ def run_agent(
     session: AgentSession | None = None,
     confirm: Callable[[str, str], bool] | None = None,
     mcp=None,
+    on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Answer a codebase question by letting the model drive search tools.
 
@@ -351,12 +386,11 @@ def run_agent(
         )
 
     for _ in range(max_iterations):
-        response = ollama.chat(
-            model=AGENT_MODEL,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *session.messages],
-            tools=tools,
+        message = _chat_once(
+            [{"role": "system", "content": SYSTEM_PROMPT}, *session.messages],
+            tools,
+            on_token,
         )
-        message = response["message"]
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
@@ -370,6 +404,8 @@ def run_agent(
         for call in tool_calls:
             name = call["function"]["name"]
             arguments = dict(call["function"]["arguments"])
+            if name == "search_docs" and session.docs_source is not None:
+                arguments["source"] = session.docs_source
             signature = f"{name}:{json.dumps(arguments, sort_keys=True, default=str)}"
 
             if signature == last_signature:

@@ -61,6 +61,11 @@ def test_show_error_mid_stream_resets_the_buffer():
 def test_completion_words_include_commands_and_sources():
     words = ui.completion_words(["python", "pytorch"])
     assert "/help" in words
+    assert "/status" in words
+    assert "/root" in words
+    assert "/reset" in words
+    assert "/agent" in words
+    assert "/code" in words
     assert "/source python" in words
     assert "/source all" in words
 

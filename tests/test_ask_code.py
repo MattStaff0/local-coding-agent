@@ -23,24 +23,29 @@ class _RecordingRenderer(ui.PlainRenderer):
 
 def _run_chat(monkeypatch, lines, renderer):
     inputs = iter(lines + ["/exit"])
-    monkeypatch.setattr(ask, "load_history", lambda path: [])
-    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
+    monkeypatch.setattr(ask, "load_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ask, "save_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)
     ask.chat_loop(renderer=renderer, read_input=lambda prompt_text: next(inputs))
 
 
-def test_code_question_streams_through_renderer(monkeypatch):
+def test_code_alias_streams_through_unified_agent(monkeypatch):
     renderer = _RecordingRenderer()
     recorded = {}
 
-    def fake_answer_code(question, history=None, repo=None, on_token=None):
+    def fake_run_agent(question, session=None, on_token=None, **kwargs):
         recorded["question"] = question
         for token in ["ret", "rieve"]:
             on_token(token)
-        return "retrieve", [
-            {"path": "src/rag.py", "start_line": 478, "heading": "src/rag.py > retrieve"}
-        ]
+        session.messages.extend(
+            [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": "retrieve"},
+            ]
+        )
+        return "retrieve", []
 
-    monkeypatch.setattr(ask, "answer_code_question", fake_answer_code)
+    monkeypatch.setattr(ask, "run_agent", fake_run_agent)
     _run_chat(monkeypatch, ["/code how does retrieve work?"], renderer)
 
     assert recorded["question"] == "how does retrieve work?"
@@ -53,13 +58,13 @@ def test_code_alone_prints_usage(monkeypatch):
     assert any("/code" in m for m in renderer.messages)
 
 
-def test_code_refusal_surfaces_the_message(monkeypatch):
+def test_code_alias_agent_error_surfaces_the_message(monkeypatch):
     renderer = _RecordingRenderer()
 
-    def refusing(question, history=None, repo=None, on_token=None):
+    def refusing(question, **kwargs):
         raise NoRelevantDocsError("Nothing relevant is indexed for that question.")
 
-    monkeypatch.setattr(ask, "answer_code_question", refusing)
+    monkeypatch.setattr(ask, "run_agent", refusing)
     _run_chat(monkeypatch, ["/code what is the meaning of life?"], renderer)
 
     assert any("Nothing relevant" in e for e in renderer.errors)
@@ -73,8 +78,9 @@ def test_chunk_label_shows_start_line_for_code():
     assert label == "[1] src/rag.py:478 § src/rag.py > retrieve"
 
 
-def test_help_and_completion_mention_code():
+def test_help_and_completion_mark_code_as_compatibility_command():
     assert "/code" in ask.HELP_TEXT
+    assert "deprecated" in ask.HELP_TEXT.lower()
     assert "/code" in ui.COMMANDS
 
 

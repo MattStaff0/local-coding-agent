@@ -1,42 +1,31 @@
 ﻿# Local AI Coding Agent
 
-This is a small local RAG-based coding assistant. It stores markdown docs locally,
-indexes them with embeddings, retrieves relevant chunks for a question, and sends
-those chunks to a local Ollama chat model.
+This is a small local coding assistant. Every free-form prompt enters one
+directory-scoped tool-calling agent, which can read current saved project files,
+search locally indexed documentation, propose confirmed edits, and run a narrow
+set of confirmed checks through a local Ollama model.
 
 The goal is to start simple and build toward a local coding agent that can read
 docs, understand a repo, suggest patches, and eventually run safe commands.
 
-## Current RAG Flow
+## Current unified flow
 
 ```text
-docs/*.md
+plain prompt or compatibility alias
 |
-split docs into chunks by markdown heading sections
-(each chunk keeps its heading breadcrumb, e.g. "Tensors > Initializing a Tensor")
+deterministic preflight: canonical root, slash commands, docs scope,
+history, MCP lifecycle, and confirmation channel
 |
-embed each file's chunks in one batched call (nomic-embed-text via Ollama)
+persistent AgentSession + local Ollama tool loop
+|-- list_files / grep / read_file -> current saved project evidence
+|-- search_docs -> hybrid docs retrieval (vector + manifest BM25 + RRF)
+|                  -> relevance refusal or numbered file § heading passages
+|-- edit_file / write_file / run_command -> preview + y/N confirmation
+`-- allowlisted MCP tools -> optional confirmation from mcp.json
 |
-store chunks and embeddings in ChromaDB (cosine space; per-file content hash)
+stream final answer through Rich/plain renderer
 |
-rebuild manifest.jsonl with chunk ids, metadata, token counts, and BM25 tokens
-|
-rewrite follow-up questions into standalone queries using chat history
-|
-hybrid retrieval: vector similarity + manifest-backed BM25, fused with RRF
-|
-refuse before answering if even the best chunk is past the relevance cutoff
-|
-trim retrieved chunks to the prompt budget, preserving top-ranked chunks whole
-|
-build a prompt with numbered doc chunks + chat history + question
-(the model must answer ONLY from the docs and cite chunks like [1])
-|
-ask the chat model through Ollama, streaming tokens as they arrive
-|
-warn if the answer has missing or out-of-range citations
-|
-print the answer, then a source legend ([n] -> file § heading)
+show compact tool trace + docs labels; persist clean root-scoped history
 ```
 
 ## Project Structure
@@ -49,7 +38,7 @@ local-ai-coding-agent/
 |   |-- ingest.py         # Updates the Chroma docs index (incremental)
 |   |-- ask.py            # Terminal chat interface
 |   |-- fetch_docs.py     # Fetches official docs into docs/<source>/
-|   |-- agent.py          # Tool-calling agent loop (/agent, CLI)
+|   |-- agent.py          # Tool-calling loop used by every free-form prompt
 |   |-- agent_tools.py    # Sandboxed list/grep/read tools for the agent
 |   `-- eval_retrieval.py # Scores retrieval against tests/golden.yaml
 |-- tests/         # Pytest suite (no Ollama needed to run it)
@@ -105,16 +94,20 @@ variable already exported in your shell always beats the file.
 
 `src/ask.py` is the terminal interface:
 
-- starts an interactive chat if no question is passed
-- streams answers token-by-token, live-rendered as markdown with
+- starts one persistent agent session at the canonical current directory if no
+  question is passed
+- sends both plain and one-shot questions through the same agent loop
+- streams agent answers token-by-token, live-rendered as markdown with
   syntax-highlighted code blocks on a real terminal (plain text when piped)
 - prompt has up-arrow history and tab-completion for slash commands
   (`/help` lists them all)
-- persists chat history across sessions (`chat_history.json`)
-- prints a citation legend mapping each `[n]` in the answer to `file § heading`
-- supports `/sources` and `/source <name>` to scope answers to one source
-- `/agent <question>` searches a codebase live with the tool-calling agent —
-  the repo you launched from by default, `--root`/`/agent root` to retarget
+- persists clean user/final-answer history separately for each canonical root
+  in `chat_history.json` (tool payloads are not persisted)
+- prints returned documentation labels such as `[1] file § heading`; project
+  evidence stays jumpable as `path:line` in the answer
+- supports `/sources` and `/source <name>` as a constraint on agent docs search
+- `/root`, `/reset`, and `/status` manage the active rooted session
+- `/agent` and `/code` are temporary deprecated aliases for asking directly
 - `/export` saves the last answer + citations as a markdown study note
 - `lca doctor` prints project home, `.env` state, Ollama host, models, and
   index status without touching the network — run it first when things break
@@ -124,7 +117,7 @@ variable already exported in your shell always beats the file.
 - the model drives sandboxed `list_files` / `grep` / `read_file` tools in a
   loop with guardrails (iteration cap, repeated-call breaker, output caps)
 - run it directly: `python src/agent.py "where is the similarity search?"`
-- see the "Agent v2" section below for sessions, edits, and MCP
+- see "Unified always-agent sessions" below for sessions, edits, and MCP
 
 `src/mcp_client.py` is the hand-rolled MCP client:
 
@@ -191,9 +184,10 @@ An editable install adds `lca`, `lca-fetch-docs`, `lca-ingest`, and
 ```bash
 pip install -e .
 lca                      # interactive chat from anywhere (venv active)
-lca "How do RNNs work?"  # one-shot question
+lca "Where is validation computed?"  # one-shot rooted at the current directory
 lca doctor               # where everything lives + model config, no network
-lca --root ~/school/proj # chat with the agent pointed at another repo
+lca --root ~/school/proj # interactive agent pointed at another repo
+lca --root ~/school/proj "Why does train.py fail?" # rooted one-shot
 ```
 
 Packaging note: the project installs the flat `src/*.py` modules top-level
@@ -255,15 +249,17 @@ Three pieces make `lca` behave the same from any directory:
    index as launching from the repo. The current directory is never used for
    state, which is why the test suite can assert a foreign launch directory
    stays byte-for-byte empty.
-3. **Only the agent follows you.** The one thing that *should* depend on
-   where you are is which code the `/agent` tools look at. That defaults to
-   your current directory, and `lca --root <path>` (or `/agent root <path>`
-   mid-chat) points it somewhere else. Changing root starts a fresh agent
-   session so context from one repo never leaks into another.
+3. **The agent follows you.** The one thing that *should* depend on where you
+   are is which code the live tools inspect. That defaults to your canonical
+   current directory, and `lca --root <path>` (or `/root <path>` mid-chat)
+   points it somewhere else. Changing root starts a fresh session, clears the
+   docs scope/export state, and restarts root-sensitive MCP servers so context
+   from one repo never leaks into another.
 
-So: RAG knowledge is global-and-shared (one index, wherever you are), agent
-context is local-and-disposable (per directory, per session). `lca doctor`
-prints both halves so you can see exactly what a given terminal will use.
+So: documentation knowledge is global-and-shared (one index, wherever you
+are), while conversation and live file context are scoped by canonical project
+root. `lca doctor` prints both halves so you can see exactly what a terminal
+will use.
 
 ### When to use this vs the Claude Code harness on a local model
 
@@ -397,18 +393,23 @@ What does the forward method do?
 How do Python lists work?
 ```
 
-On a real terminal the answer streams as live-rendered markdown (headings,
-tables, syntax-highlighted code), the prompt supports up-arrow history and
-tab-completion, and a spinner shows while retrieval runs. Piped output stays
-plain text. `/help` lists all commands:
+On a real terminal the agent answer streams as live-rendered markdown
+(headings, tables, syntax-highlighted code), the prompt supports up-arrow
+history and tab-completion, and a spinner shows while the agent thinks. Piped
+output stays plain text. Every free-form line uses the same live-file/docs agent;
+slash commands remain deterministic. `/help` lists all commands:
 
 ```text
 /help             show this help
+/status           show root, session size, docs scope, and MCP state
+/root [path]      show or change root (a change starts fresh)
+/reset            clear this root's session
 /sources          list indexed doc sources
-/source <name>    answer only from one source (/source all to reset)
-/agent <question> search this codebase live with tools
+/source <name>    constrain docs search (/source all to reset)
 /export           save the last answer as a study note
 /exit             quit
+/agent <question> deprecated alias for asking directly
+/code <question>  deprecated alias for asking directly
 ```
 
 You can also ask one question directly:
@@ -417,27 +418,33 @@ You can also ask one question directly:
 python src/ask.py "How do I create a neural network in PyTorch?"
 ```
 
-Answers are checked after generation for citation shape. If the model omits
-`[n]` citations or cites a chunk number that was not sent in the prompt, the
-CLI prints a grounding warning but does not rerun or reject the answer.
+Documentation tool results retain numbered path/heading labels, and the agent
+prompt requires those full labels for library claims. File claims use `path:line`
+from current reads. The legacy docs-only RAG answer function still has its
+warn-only citation checker, but it is no longer a user-facing free-form route.
 
-## Agent v2: Sessions, Edits, MCP
+## Unified always-agent sessions
 
-`/agent` conversations are now persistent within a chat session — follow-up
-`/agent` questions remember earlier ones. Subcommands:
+Run `lca` in a project and ask normally. Follow-ups use the same `AgentSession`;
+you never need to enter an agent mode. Session commands are deterministic:
 
 ```text
-/agent <question>     ask (continues the current session)
-/agent                show current root and message count
-/agent reset          clear the session
-/agent root <path>    point the agent at another repo (starts a fresh session)
+/status          show canonical root, message count, docs scope, MCP state,
+                 and the confirmation policy
+/reset           clear messages, docs scope, and export state; keep the root
+/root            show the canonical root
+/root <path>     change root and start fresh
 ```
 
-The agent can also consult the ingested library documentation mid-loop with
-`search_docs(query, source?)` — the same hybrid retrieval as plain chat, so
+The agent consults ingested library documentation mid-loop with
+`search_docs(query, source?)` — the same hybrid docs retriever as before, so
 "why does this line of my code misuse pandas" can pull the pandas docs while
 reading your file. Failures (index not built, Ollama down) come back to the
 model as text, never crash the loop, and show as ERROR in the trace.
+
+`/source pandas` does not switch modes or force retrieval. It constrains any
+later `search_docs` call to pandas even if the model omits or requests another
+source; `/source all` removes the constraint.
 
 The agent can also propose file edits (`edit_file`, `write_file`) and run
 allowlisted commands (`run_command`: only `pytest` and `python`). Every
@@ -456,7 +463,7 @@ Apply? [y/N]:
 
 External tools come from MCP servers declared in `mcp.json` at the project
 root (requires [`uvx`](https://docs.astral.sh/uv/)); servers start lazily on
-the first `/agent` call:
+the first free-form interactive turn, or immediately for a one-shot:
 
 ```json
 {
@@ -468,6 +475,11 @@ the first `/agent` call:
 }
 ```
 
+Each stdio server starts with the canonical agent root as its working directory.
+Changing `/root` stops the old manager and lazily starts a new one; exit, EOF,
+and interrupt stop it as well. Missing/malformed config or unavailable servers
+degrade to the seven native tools instead of killing the session.
+
 To add a server: add an entry with its launch command and a `"tools"`
 allowlist (tool names are namespaced `server_tool`). An optional
 `"confirm": [...]` list routes specific tools through the y/N gate. Keep the
@@ -476,7 +488,7 @@ choosing between more, and the CLI warns when a config exceeds it. The seven
 built-in tools already use most of that budget, so allowlist MCP tools one
 at a time.
 
-## Code Indexing (`/code`)
+## Optional code index (ingest/evaluation subsystem)
 
 Python repos index into a second Chroma collection (`local_code`) with an
 ast-based chunker: one chunk per top-level function/class (decorators and
@@ -490,31 +502,43 @@ python src/ingest_code.py .                                # index this repo
 python src/ingest_code.py ~/school/dl-project --name dl-project
 ```
 
-Then in chat:
-
-```text
-/code where is the relevance cutoff applied?
-```
-
 Citations point at jumpable locations (`src/rag.py:478 § src/rag.py > retrieve`).
 Re-run `ingest_code.py` after code changes — it is incremental (content
 hashes), so unchanged files are never re-embedded. Score the code index with
 `python src/eval_retrieval.py --code` (golden set: `tests/golden_code.yaml`).
 
+The unified CLI does not automatically use this semantic index: live
+`list_files`/`grep`/`read_file` tools are the current project path. `/code` is
+kept for one release only as a compatibility alias and now enters that same
+live agent path. Workstream 06 will measure routing before any semantic project
+search is added to the default loop.
+
 Stretch experiment: compare `OLLAMA_EMBED_MODEL=nomic-embed-text` against a
 code-tuned embedder (e.g. CodeRankEmbed) with `eval_retrieval.py --code` on
 the PC — numbers decide, not vibes.
 
-## Current Memory Behavior
+## Current memory and export behavior
 
 The chat has persistent memory:
 
-- it remembers previous turns and uses them to understand follow-up questions
-  (follow-ups are rewritten into standalone queries before retrieval)
-- history is saved to `chat_history.json` (not committed) and restored on the
-  next run; only the most recent 100 messages are kept
-- `/export` turns the last answer and its citations into a study note under
-  `STUDY_NOTES_DIR`
+- one `AgentSession` remembers previous user, assistant, and tool turns in the
+  current process
+- `chat_history.json` stores a versioned map by canonical root; only clean
+  user/final-answer messages are restored, capped at 100 per root
+- `/reset` clears the active root's saved session; `/root <path>` always starts
+  fresh rather than restoring an older target-root conversation
+- `/export` turns the last successful project, docs, mixed, or alias answer and
+  its returned docs labels into a study note under `STUDY_NOTES_DIR`
+- one-shot questions do not modify interactive history
+
+Compatibility note: `/agent` and `/code` print one deprecation hint per process
+and otherwise use exactly the same session, streaming, source scope, MCP tools,
+history, export, and confirmation gates as a plain question. Both aliases are
+scheduled for removal after one documented release.
+
+Explicit `@path` attachments, line ranges, notebooks, and `--context` are not
+implemented yet; those interfaces belong to the next workstream. Terminal mode
+currently sees saved files through the live root-sandboxed tools.
 
 ## When to Reingest
 
