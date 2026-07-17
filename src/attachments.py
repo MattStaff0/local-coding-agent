@@ -155,6 +155,63 @@ def parse_attachments(text: str, exists) -> tuple[str, list[AttachmentSpec]]:
     return cleaned, _merge_specs(specs)
 
 
+@dataclass(frozen=True)
+class PreparedTurn:
+    """One user turn with attachments resolved and embedded."""
+
+    question: str
+    labels: list[str]
+
+
+def prepare_turn(
+    root: Path, raw_text: str, cli_contexts: tuple[str, ...] | list[str] = ()
+) -> PreparedTurn:
+    """Resolve @tokens and --context paths into one model-ready message.
+
+    The single entry point for both interactive and one-shot turns — parity
+    between them is this function being the only implementation.
+    """
+    root_resolved = root.resolve()
+
+    def exists(candidate: str) -> bool:
+        path = Path(candidate)
+        target = path if path.is_absolute() else root_resolved / path
+        try:
+            return target.is_file()
+        except OSError:
+            return False
+
+    clean, specs = parse_attachments(raw_text, exists)
+
+    context_specs: list[AttachmentSpec] = []
+    for context in cli_contexts:
+        path, start, end = _split_range(context)
+        if start is not None:
+            _validate_range(context, start, end)
+        # --context is explicit: unlike @tokens it must resolve, so a missing
+        # file is reported by resolution rather than left in the text.
+        context_specs.append(AttachmentSpec(path, start, end))
+
+    merged = _merge_specs(context_specs + specs) if context_specs else specs
+
+    if merged and not clean.strip():
+        raise AttachmentError(
+            "Attachment without a question — add what you want to know about it."
+        )
+
+    resolved = [resolve_attachment(root, spec) for spec in merged]
+
+    if not resolved:
+        return PreparedTurn(question=clean, labels=[])
+
+    blocks = [
+        f"Attached file: {attachment.label}\n{attachment.content}"
+        for attachment in resolved
+    ]
+    question = "\n\n".join(blocks) + f"\n\nQuestion: {clean}"
+    return PreparedTurn(question=question, labels=[a.label for a in resolved])
+
+
 def _reject_symlinked_parents(root: Path, relative: Path) -> None:
     """Never follow directory symlinks, even ones that stay inside root."""
     current = root

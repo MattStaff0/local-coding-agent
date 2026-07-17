@@ -418,6 +418,29 @@ You can also ask one question directly:
 python src/ask.py "How do I create a neural network in PyTorch?"
 ```
 
+### Attach files with @path
+
+Any prompt can attach current **saved** files (terminal mode cannot see
+unsaved editor buffers) — the content is read fresh at ask time, no ingest:
+
+```text
+You: @src/train.py why is my validation loss shape wrong?
+You: compare @train.py:80-130 with what @"my notes/plan.md" says
+$ lca --context notebooks/lesson.ipynb "why does cell 4 fail?"
+$ lca --context app.py:10-40 "explain this loop"
+```
+
+An `@token` only attaches when it names an existing file inside the project
+root — `@dataclass` or `@app.route` in a normal Python question stays plain
+text. Ranges are 1-based and inclusive; overlapping ranges of the same file
+are merged; ranges on a `.ipynb` select cells, and notebooks render as
+numbered cells (`lesson.ipynb:cell-2`) with binary outputs omitted. Files are
+sandboxed to the root (symlinks that escape are rejected), `.gitignore`d
+files can still be attached explicitly, but secrets and binary artifacts
+(`.env`, keys, weights, databases, images — see `src/fs_policy.py`) are
+refused even when named explicitly, and live `grep`/`list_files` skip both.
+Oversized files (>256 KB) are rejected with a hint to attach a range.
+
 Documentation tool results retain numbered path/heading labels, and the agent
 prompt requires those full labels for library claims. File claims use `path:line`
 from current reads. The legacy docs-only RAG answer function still has its
