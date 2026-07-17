@@ -78,7 +78,12 @@ lca --root <path>     use a different project root for this run
 ## Safety model
 
 Reads are sandboxed to the project root (symlinks that escape are
-rejected). Writes and commands always show a preview and ask `Apply? [y/N]`
-— declining is a normal answer, not an error. Doc fetches only ever touch
-the official origins declared in `sources.yaml`, and your code never gets
-sent to a documentation site.
+rejected). Writes and commands are **interactive-only**: in chat they show
+a preview and ask `Apply? [y/N]` (declining is a normal answer, not an
+error); a one-shot `lca "..."` has no confirmation channel, so mutation
+attempts are refused rather than applied. Doc fetches only ever touch the
+official origins declared in `sources.yaml`, and your code never gets sent
+to a documentation site. One caveat: MCP servers you enable in `mcp.json`
+run with their own capabilities — the example config includes a `fetch`
+tool that can reach the web, so trim `mcp.json` if you want a strictly
+offline loop.

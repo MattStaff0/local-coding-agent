@@ -51,8 +51,11 @@ lca-fetch-docs            # downloads the sources.yaml corpus into docs/
 lca-ingest                # embeds it into the local Chroma index
 ```
 
-Add or trim libraries by editing `sources.yaml` (see the registry comments
-in that file for the version-aware options), then `lca docs sync <source>`.
+Add libraries by editing `sources.yaml` (see the registry comments in that
+file for the version-aware options), then `lca docs sync <source>`. To
+**remove** a source, deleting the registry entry isn't enough — sync never
+deletes cached pages — so also delete `docs/<source>/` and re-run
+`lca-ingest`, which drops chunks for files that no longer exist.
 
 ## 4. Verify
 

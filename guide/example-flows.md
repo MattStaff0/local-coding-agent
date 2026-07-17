@@ -44,16 +44,21 @@ lca: (full snippet immediately — still citing train.py lines and docs)
 
 ```text
 You: why did df.append stop working after I moved machines?
-lca: warning: these docs are for pandas 3.0, but this project has
-     pandas 2.2.1 (lock) — behavior may differ.
-     The docs say DataFrame.append was removed in 3.0 [1]; in 2.x it is
-     deprecated but present. On YOUR pinned version the call still runs
-     with a FutureWarning; use pd.concat either way.
-     [1] pandas/whatsnew § Removals (docs v3.0, fetched 2d ago)
+lca: warning: these docs are for pandas 2.2, but this project has
+     pandas 1.5.3 (lock) — behavior may differ.
+     The docs say DataFrame.append was removed in pandas 2.0 [1]. On YOUR
+     pinned 1.5 it still runs (with a deprecation warning); the machine
+     you moved to has 2.x installed, which is why it broke there. Use
+     pd.concat either way.
+     [1] pandas/whatsnew § Removals (docs v2.2, fetched 2d ago)
 ```
 
 That warning is the point of version-aware docs: **fresh** documentation is
-not automatically **compatible** documentation.
+not automatically **compatible** documentation. Note: mismatch warnings
+need version-labeled docs — pages fetched from a `stable` alias URL record
+`stable-at-fetch` and show as *unknown* compatibility rather than warning.
+Fetch from a source's `versioned_url_template` pages when your project pins
+an older major.minor.
 
 ## 5. Honest misses
 

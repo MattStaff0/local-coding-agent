@@ -64,7 +64,9 @@ don't embed a version at all (they exec the repo's current code).
   there is no editor adapter yet.
 - **Configured corpus, not the web.** Docs answers come from the official
   pages you fetched — nothing else. If a library isn't in `sources.yaml`,
-  the agent should say so rather than guess.
+  the agent should say so rather than guess. (Exception: MCP tools you
+  enable in `mcp.json` have their own reach — the example config's `fetch`
+  tool can hit the web; remove it for a strictly offline loop.)
 - **Local-model ceiling.** A 3B model misroutes tools and misses nuance a
   frontier model would catch; the eval harnesses
   (`src/eval_retrieval.py`, `src/eval_learning.py`, `src/eval_routing.py`)

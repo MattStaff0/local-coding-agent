@@ -47,7 +47,7 @@ local-ai-coding-agent/
 |   |-- agent_tools.py    # Sandboxed list/grep/read tools for the agent
 |   `-- eval_retrieval.py # Scores retrieval against tests/golden.yaml
 |-- guide/         # Setup, usage, example flows, troubleshooting
-|-- eval/          # Learning/routing evaluation reports (committed)
+|-- eval/          # Created by the eval scripts; commit reports after runs
 |-- tests/         # Pytest suite (no Ollama needed to run it)
 |-- .github/       # CI: pytest on every push and pull request
 |-- sources.yaml   # Registry of doc sources and URLs to fetch
