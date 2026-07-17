@@ -119,7 +119,7 @@ def test_run_agent_turn_collects_only_returned_docs_labels(
     monkeypatch.setattr(
         agent,
         "search_docs",
-        lambda query, source=None: (
+        lambda query, source=None, root=None: (
             "[1] docs/pandas/merge.md § Concat\npassage\n\n"
             "[1] docs/pandas/merge.md § Concat\npassage"
         ),

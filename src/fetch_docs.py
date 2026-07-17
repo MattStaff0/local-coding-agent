@@ -10,9 +10,12 @@ import yaml
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+import paths
 from rag import DOCS_DIR
 
-SOURCES_FILE = Path("sources.yaml")
+# Anchored to the repo, not the cwd: `lca docs …` must find the registry
+# when launched from any target project (run-anywhere contract).
+SOURCES_FILE = paths.PROJECT_ROOT / "sources.yaml"
 REQUEST_TIMEOUT = 30
 # Some doc sites reject the default python-requests user agent.
 USER_AGENT = "local-coding-agent-docs-fetcher (personal RAG study tool)"
@@ -58,7 +61,31 @@ def load_sources(registry_path: Path) -> dict[str, dict]:
     return sources
 
 
+# Registry v2 (workstream 04): version/provenance keys. Unknown keys are
+# rejected so a typo cannot silently disable origin checks or TTLs.
+_KNOWN_SOURCE_KEYS = {
+    "pages", "crawl", "max_pages", "delay",
+    "official_origins", "distribution", "import_names",
+    "docs_version_pattern", "versioned_url_template",
+    "refresh_ttl_days", "version_policy",
+}
+
+DEFAULT_REFRESH_TTL_DAYS = 7
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def _normalize_source(value: dict, name: str, registry_path: Path) -> dict:
+    unknown = set(value) - _KNOWN_SOURCE_KEYS
+    if unknown:
+        raise ValueError(
+            f"Source '{name}' in {registry_path}: unknown keys: "
+            f"{', '.join(sorted(unknown))}"
+        )
+
     pages = value.get("pages", [])
 
     if isinstance(pages, str) or not isinstance(pages, list):
@@ -67,11 +94,27 @@ def _normalize_source(value: dict, name: str, registry_path: Path) -> dict:
             f"URLs, got {type(pages).__name__}"
         )
 
+    origins = value.get("official_origins")
+    if not origins:
+        candidates = list(pages) + ([value["crawl"]] if value.get("crawl") else [])
+        origins = sorted({_origin(url) for url in candidates})
+
+    distribution = value.get("distribution", name)
+
     return {
         "pages": list(pages),
         "crawl": value.get("crawl"),
         "max_pages": int(value.get("max_pages", DEFAULT_CRAWL_MAX_PAGES)),
         "delay": float(value.get("delay", DEFAULT_CRAWL_DELAY)),
+        "official_origins": list(origins),
+        "distribution": distribution,
+        "import_names": list(value.get("import_names", [distribution])),
+        "docs_version_pattern": value.get("docs_version_pattern"),
+        "versioned_url_template": value.get("versioned_url_template"),
+        "refresh_ttl_days": int(
+            value.get("refresh_ttl_days", DEFAULT_REFRESH_TTL_DAYS)
+        ),
+        "version_policy": value.get("version_policy", "major_minor"),
     }
 
 
@@ -175,25 +218,85 @@ def write_doc(
     markdown: str,
     url: str,
     fetched: str,
+    etag: str | None = None,
+    last_modified: str | None = None,
+    docs_version: str | None = None,
 ) -> Path:
     """Save converted markdown under docs/<source>/ with provenance frontmatter."""
     source_dir = docs_dir / source
     source_dir.mkdir(parents=True, exist_ok=True)
 
     path = source_dir / f"{slug}.md"
-    frontmatter = f"---\nurl: {url}\nfetched: {fetched}\n---\n\n"
+    lines = [f"url: {url}", f"fetched: {fetched}"]
+    if etag:
+        lines.append(f"etag: {etag}")
+    if last_modified:
+        lines.append(f"last_modified: {last_modified}")
+    if docs_version:
+        lines.append(f"docs_version: {docs_version}")
+    frontmatter = "---\n" + "\n".join(lines) + "\n---\n\n"
     path.write_text(frontmatter + markdown.strip() + "\n", encoding="utf-8")
 
     return path
 
 
-def fetch_page(url: str) -> str:
-    """Download one doc page: HTML, or raw markdown for .md/.txt URLs."""
-    response = requests.get(
-        url,
-        timeout=REQUEST_TIMEOUT,
-        headers={"User-Agent": USER_AGENT},
+def _doc_validators(path: Path) -> dict[str, str]:
+    """Stored HTTP validators from a fetched doc's frontmatter, if any."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    validators = {}
+    etag = re.search(r"^etag: (.+)$", text, flags=re.MULTILINE)
+    if etag:
+        validators["etag"] = etag.group(1).strip()
+    modified = re.search(r"^last_modified: (.+)$", text, flags=re.MULTILINE)
+    if modified:
+        validators["last_modified"] = modified.group(1).strip()
+    return validators
+
+
+def _touch_fetched(path: Path, today: str) -> None:
+    """A 304 proves currency: refresh the fetched date, keep the content."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    path.write_text(
+        re.sub(
+            r"^fetched: .+$", f"fetched: {today}", text, count=1, flags=re.MULTILINE
+        ),
+        encoding="utf-8",
     )
+
+
+def docs_version_for_url(url: str, pattern: str | None) -> str | None:
+    """Docs version read out of a URL, or 'stable-at-fetch' when unpinned.
+
+    'stable-at-fetch' is deliberately not a version: a stable-alias page is
+    whatever the project shipped that day, so compatibility stays unknown.
+    """
+    if not pattern:
+        return None
+    match = re.search(pattern, url)
+    if not match:
+        return "stable-at-fetch"
+    version = match.group("version")
+    return "stable-at-fetch" if version == "stable" else version
+
+
+def fetch_response(url: str, extra_headers: dict | None = None):
+    """GET one doc page; returns the response (304 passes through un-raised)."""
+    headers = {"User-Agent": USER_AGENT}
+    if extra_headers:
+        headers.update(extra_headers)
+
+    response = requests.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
+
+    if response.status_code == 304:
+        return response
+
     response.raise_for_status()
 
     # Servers that omit the charset make requests guess ISO-8859-1, which
@@ -201,7 +304,12 @@ def fetch_page(url: str) -> str:
     if "charset" not in response.headers.get("content-type", "").lower():
         response.encoding = "utf-8"
 
-    return response.text
+    return response
+
+
+def fetch_page(url: str) -> str:
+    """Download one doc page: HTML, or raw markdown for .md/.txt URLs."""
+    return fetch_response(url).text
 
 
 def markdown_variant_url(url: str) -> str | None:
@@ -241,7 +349,7 @@ def probe_native_markdown(url: str) -> tuple[str, str] | None:
         return None
 
     try:
-        text = fetch_page(variant)
+        response = fetch_response(variant)
     except requests.HTTPError:
         # The designed miss: this site simply doesn't serve the convention.
         return None
@@ -251,13 +359,17 @@ def probe_native_markdown(url: str) -> tuple[str, str] | None:
         print(f"  markdown probe failed for {variant}: {error} — scraping HTML")
         return None
 
+    text = response.text
+
     # Heuristic: a leading "<" almost always means an HTML shell or error
     # page. A rare markdown file that opens with raw HTML is misclassified
     # and just falls back to HTML scraping.
     if text.lstrip().startswith("<"):
         return None
 
-    return variant, text
+    # Report where the content actually came from, so the caller can hold
+    # redirected probes to the same official-origin rule as scraped pages.
+    return getattr(response, "url", None) or variant, text
 
 
 def _unique_slug(url: str, taken: set[str]) -> str:
@@ -355,32 +467,82 @@ def fetch_source(
     failed = []
     taken_slugs: set[str] = set()
 
+    origins = config.get("official_origins") or []
+
     for index, url in enumerate(urls):
         if delay and index:
             time.sleep(delay)
 
         slug = _unique_slug(url, taken_slugs)
+        existing = docs_dir / source / f"{slug}.md"
 
+        conditional: dict[str, str] = {}
         if max_age_days is not None:
-            age = doc_age_days(docs_dir / source / f"{slug}.md")
+            age = doc_age_days(existing)
             if age is not None and age <= max_age_days:
                 print(f"  {url} is {age}d old, fresh enough — skipped")
                 continue
+            # Conditional refresh: let the server say "unchanged" cheaply.
+            validators = _doc_validators(existing)
+            if validators.get("etag"):
+                conditional["If-None-Match"] = validators["etag"]
+            if validators.get("last_modified"):
+                conditional["If-Modified-Since"] = validators["last_modified"]
 
         # Prefer native markdown when the site publishes it (llms.txt
         # convention) — no conversion loss, and far fewer tokens than HTML.
-        probe = probe_native_markdown(url)
+        # A conditional refresh skips the probe: validators belong to the
+        # URL variant they came from.
+        probe = None if conditional else probe_native_markdown(url)
+        meta: dict[str, str | None] = {}
+        # Sources without v2 metadata (raw URL lists) keep the plain-text
+        # fetch path; origin enforcement and validators need the response.
+        wants_response = bool(origins or config.get("docs_version_pattern"))
 
         if probe is not None:
             fetched_url, markdown = probe
+            if origins and _origin(fetched_url) not in origins:
+                # A probe that redirected off-origin is as untrusted as any
+                # other off-origin content.
+                print(f"  FAILED {url}: markdown probe redirected off "
+                      f"official origin ({fetched_url})")
+                failed.append(url)
+                continue
         else:
             fetched_url = url
             try:
-                html = fetch_page(url)
+                if conditional or wants_response:
+                    response = fetch_response(url, conditional)
+                else:
+                    response = None
+                    html = fetch_page(url)
             except requests.RequestException as error:
                 print(f"  FAILED {url}: {error}")
                 failed.append(url)
                 continue
+
+            if response is not None:
+                # Origin check comes before trusting ANYTHING about the
+                # response — including a 304's claim that our cache is valid.
+                final_url = response.url or url
+                if origins and _origin(final_url) not in origins:
+                    # A redirect off the official origin is a rejected page,
+                    # never a replacement for the last good copy.
+                    print(f"  FAILED {url}: redirected off official origin "
+                          f"({final_url})")
+                    failed.append(url)
+                    continue
+
+                if response.status_code == 304:
+                    _touch_fetched(existing, date.today().isoformat())
+                    print(f"  {url} not modified — cache validated")
+                    continue
+
+                html = response.text
+                meta = {
+                    "etag": response.headers.get("ETag"),
+                    "last_modified": response.headers.get("Last-Modified"),
+                }
 
             # Pages already published as markdown need no conversion at all.
             if urlparse(url).path.endswith((".md", ".txt")):
@@ -395,6 +557,11 @@ def fetch_source(
             markdown=markdown,
             url=fetched_url,
             fetched=date.today().isoformat(),
+            etag=meta.get("etag"),
+            last_modified=meta.get("last_modified"),
+            docs_version=docs_version_for_url(
+                fetched_url, config.get("docs_version_pattern")
+            ),
         )
         print(f"  {url} -> {path}")
         written.append(path)

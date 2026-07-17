@@ -304,6 +304,29 @@ ollama pull nomic-embed-text
 ollama pull qwen2.5-coder:3b
 ```
 
+## Version-aware docs (freshness ≠ compatibility)
+
+Docs can be *fresh* (recently fetched) yet *incompatible* (wrong version for
+your project) — pandas' live docs are 3.x, which will mislead a pandas-2.x
+project. The pipeline tracks both:
+
+- `sources.yaml` v2 entries declare `official_origins` (fetches and
+  redirects must stay on them), a `distribution` name, a
+  `docs_version_pattern` to read the docs version out of URLs, and a
+  `refresh_ttl_days` freshness budget. Old list-form entries still work.
+- Fetched pages record `url`, `fetched`, HTTP validators (`etag`,
+  `last_modified`), and `docs_version` in their frontmatter; ingest carries
+  those into every chunk. Refreshes send conditional requests (a 304 just
+  revalidates the cache), and a failed fetch never deletes the last good copy.
+- The project's own library versions are detected without running its code
+  (`src/project_versions.py`): lockfile pins, then pyproject constraints,
+  then `.venv` dist-info metadata — always labeled with that confidence.
+- `search_docs` results show `(docs v3.0, fetched 12d ago)` and print a
+  mismatch warning when the docs version contradicts the project's.
+- `lca docs status` reports it all offline: pages, fetch age vs TTL, and
+  compatibility per source. `lca docs sync [source]` is the explicit,
+  bounded refresh + re-index (the agent never fetches docs on its own).
+
 ## Fetch Official Docs
 
 `sources.yaml` maps a source name to the doc pages to download. Each source
