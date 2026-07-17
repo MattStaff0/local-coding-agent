@@ -919,7 +919,12 @@ def chunk_label(number: int, metadata: dict[str, Any]) -> str:
     Code chunks carry a start_line, shown as path:line so a citation points
     at a jumpable location.
     """
-    path = metadata.get("path", metadata.get("source", "unknown"))
+    # Prefer the portable relative path: labels end up in transcripts,
+    # history, and exports, which must not leak absolute machine paths.
+    path = (
+        metadata.get("relative_path")
+        or metadata.get("path", metadata.get("source", "unknown"))
+    )
     heading = metadata.get("heading", "")
 
     if "start_line" in metadata:

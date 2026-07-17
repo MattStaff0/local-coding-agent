@@ -8,6 +8,11 @@ set of confirmed checks through a local Ollama model.
 The goal is to start simple and build toward a local coding agent that can read
 docs, understand a repo, suggest patches, and eventually run safe commands.
 
+**New here? Start with the [guide](guide/setup.md):**
+[setup](guide/setup.md) · [usage](guide/usage.md) ·
+[example flows](guide/example-flows.md) ·
+[troubleshooting & rollback](guide/troubleshooting.md)
+
 ## Current unified flow
 
 ```text
@@ -41,6 +46,8 @@ local-ai-coding-agent/
 |   |-- agent.py          # Tool-calling loop used by every free-form prompt
 |   |-- agent_tools.py    # Sandboxed list/grep/read tools for the agent
 |   `-- eval_retrieval.py # Scores retrieval against tests/golden.yaml
+|-- guide/         # Setup, usage, example flows, troubleshooting
+|-- eval/          # Created by the eval scripts; commit reports after runs
 |-- tests/         # Pytest suite (no Ollama needed to run it)
 |-- .github/       # CI: pytest on every push and pull request
 |-- sources.yaml   # Registry of doc sources and URLs to fetch
@@ -649,9 +656,16 @@ it degrades precision, never availability.
 
 ## Near-Term Next Steps
 
-Good next improvements:
+The 2026-07 build roadmap (workstreams 01–08) is implemented; what remains
+is measurement on the Ollama machine:
 
-1. Add more official docs slowly (grow `sources.yaml`).
-2. Compare a code-tuned embedder (CodeRankEmbed) vs nomic-embed-text with
-   `eval_retrieval.py --code`.
-3. Measure the reranker on the PC (`RAG_RERANKER=cross-encoder` before/after).
+1. `lca docs sync` (fetch the TensorFlow corpus + refresh registry sources),
+   then `python src/eval_retrieval.py` for a fresh baseline.
+2. `python src/eval_learning.py` and review the human rubric cells
+   (release threshold: ≥90% of all cells).
+3. `LCA_EVAL_HARDWARE="..." python src/eval_routing.py`, then make the
+   routing decision from the report's bands — and with it the deferred
+   lazy-semantic-index (workstream 07) decision.
+4. Afterwards, the old ideas still stand: grow `sources.yaml` slowly,
+   compare a code-tuned embedder with `eval_retrieval.py --code`, and
+   measure the reranker (`RAG_RERANKER=cross-encoder` before/after).

@@ -124,3 +124,19 @@ def test_answer_code_question_refuses_far_matches(monkeypatch):
 
     with pytest.raises(NoRelevantDocsError):
         rag.answer_code_question("what is the meaning of life?")
+
+
+def test_chunk_label_prefers_relative_path_over_absolute(tmp_path):
+    label = rag.chunk_label(
+        1,
+        {
+            "path": str(tmp_path / "docs" / "numpy" / "quickstart.md"),
+            "relative_path": "numpy/quickstart.md",
+            "heading": "Basics",
+        },
+    )
+
+    # Labels reach transcripts, history, and exports — never leak the
+    # machine's absolute paths when the portable form exists.
+    assert str(tmp_path) not in label
+    assert "numpy/quickstart.md" in label
