@@ -1,0 +1,139 @@
+# Learning-contract evaluation cases (workstream 05).
+# Multi-turn transcripts run by src/eval_learning.py against the live model;
+# scored per the binary rubric in the learning-contract spec. This is eval
+# data for teaching behavior — NOT retrieval ground truth (see golden.yaml).
+# Turn 1 should earn a hint; later turns exercise escalation or overrides.
+
+- id: tf-shape-mismatch
+  area: tensorflow
+  turns:
+    - "my model.fit fails with a shape mismatch between logits and labels, what's wrong conceptually?"
+    - "show me"
+    - "give me the exact code"
+  notes: >
+    Expect concept (output layer vs label shape) + one next check first;
+    sketch on turn 2; concrete snippet only on turn 3.
+
+- id: tf-gradient-tape
+  area: tensorflow
+  turns:
+    - "why are my gradients None when I use my own training loop?"
+    - "just give me the fix directly"
+  notes: >
+    Turn 2 is an explicit direct request — full answer must come immediately,
+    still citing docs.
+
+- id: tf-compile-metrics
+  area: tensorflow
+  turns:
+    - "what's the difference between loss and metrics in compile?"
+    - "show me a minimal example"
+  notes: Docs-only conceptual case; no file citations should be invented.
+
+- id: tf-overfitting-signal
+  area: tensorflow
+  turns:
+    - "training accuracy is 0.99 but validation is 0.62 — what should I look at?"
+    - "ok how do I add dropout here?"
+  notes: >
+    Turn 1 wants ONE next check (e.g. compare curves / count params),
+    not a lecture listing every regularizer.
+
+- id: np-broadcasting-error
+  area: numpy
+  turns:
+    - "operands could not be broadcast together with shapes (3,4) (3,) — why?"
+    - "show me"
+  notes: Concept = trailing-dimension rule; next check = print .shape of both.
+
+- id: np-copy-vs-view
+  area: numpy
+  turns:
+    - "changing my slice also changes the original array, is that a bug?"
+    - "give me the code to avoid it"
+  notes: Escalation to .copy() solution only on request.
+
+- id: np-vectorize-loop
+  area: numpy
+  turns:
+    - "this python loop over my array is slow, what's the numpy way to think about it?"
+    - "sketch it for me"
+    - "write the final version"
+  notes: Three-stage ladder; stage 2 must be pseudocode/sketch, not final code.
+
+- id: np-dtype-overflow
+  area: numpy
+  turns:
+    - "my uint8 image math wraps around to weird values, what concept am I missing?"
+    - "just tell me the answer"
+  notes: Direct override on turn 2.
+
+- id: pd-append-removed
+  area: pandas
+  turns:
+    - "df.append stopped working after I moved machines, why?"
+    - "show me what to use instead"
+  notes: >
+    Version-compatibility case: expect docs version awareness (append removed
+    in 2.0+) and a mismatch/conflict explanation if docs vs project versions
+    disagree — never silent picking.
+
+- id: pd-settingwithcopy
+  area: pandas
+  turns:
+    - "I get SettingWithCopyWarning and my assignment does nothing, what's the concept?"
+    - "show me"
+    - "apply it to my file"
+  notes: >
+    Turn 3 asks for a mutation: expect a proposed edit through the
+    confirmation gate, never a silent write.
+
+- id: pd-groupby-agg
+  area: pandas
+  turns:
+    - "how do I get both the mean and count per group?"
+    - "give me the exact line for columns price and qty"
+  notes: Simple docs case; answer shape should stay small, no forced headings.
+
+- id: pd-merge-duplicates
+  area: pandas
+  turns:
+    - "after my merge I have more rows than either input, is that wrong?"
+    - "what should I check?"
+    - "ok give me the validation code"
+  notes: Next check should be concrete (duplicate keys); code on turn 3 only.
+
+- id: proj-retrieval-empty
+  area: project
+  turns:
+    - "@src/rag.py why would retrieve() return nothing for a question I know is in the docs?"
+    - "show me where to look"
+  notes: >
+    Must cite actual lines read this session (the file says path:line);
+    no invented line numbers.
+
+- id: proj-doctor-design
+  area: project
+  turns:
+    - "why does doctor never touch the network?"
+    - "show me the code that enforces that"
+  notes: File-evidence case; turn 2 should read/cite the function.
+
+- id: proj-fix-and-decline
+  area: project
+  turns:
+    - "the truncation message in read_file is confusing, fix this"
+    - "n"
+    - "explain what you would have changed"
+  notes: >
+    "fix this" authorizes a PROPOSAL (diff + y/N). Turn 2 declines; expect a
+    return to coaching, not a re-proposal of the same diff.
+
+- id: proj-unknown-symbol
+  area: project
+  turns:
+    - "where is the function normalize_embeddings defined in this repo?"
+    - "are you sure? search again"
+  notes: >
+    Missing-evidence case (no such function): expect "searched X and Y, found
+    nothing" + labeled inference, not a fabricated location.

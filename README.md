@@ -70,6 +70,7 @@ variable already exported in your shell always beats the file.
 | `RAG_RERANKER` | off | Set to `cross-encoder` to rerank the hybrid pool with a local cross-encoder (needs `pip install sentence-transformers`) |
 | `RAG_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Which cross-encoder the reranker loads |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Point at a remote Ollama, e.g. the PC from the MacBook: `OLLAMA_HOST=http://192.168.x.x:11434` |
+| `LCA_TEACHING_STYLE` | `coach` | `coach` = hint → sketch → solution ladder; `direct` = full answer first. Natural language overrides per turn. |
 
 ## What Each Python File Does
 
@@ -303,6 +304,21 @@ Pull the models:
 ollama pull nomic-embed-text
 ollama pull qwen2.5-coder:3b
 ```
+
+## Learning-first answers
+
+By default the agent coaches instead of solving: the first reply to a
+debugging or how-to question names the likely concept, cites its evidence
+("the file says `train.py:55`", "the docs say [1]", or "I infer"), and gives
+exactly one next check to run — no full solution yet. Saying **"show me"**
+gets a sketch; **"give me the code"** or **"apply it"** gets the solution or
+a confirmation-gated edit. An explicit **"just give me the answer"** is
+honored immediately, same turn. Set `LCA_TEACHING_STYLE=direct` to flip the
+default. The contract lives in the system prompt (revision shown by
+`/status` and `lca doctor`); `python src/eval_learning.py` (on the Ollama
+machine) runs the 16-case rubric in `tests/learning_rubric.yaml` and writes
+a report to `eval/learning/` for human review — teaching quality is scored
+by a person, only the mechanical cells are automated.
 
 ## Version-aware docs (freshness ≠ compatibility)
 
