@@ -103,3 +103,111 @@ def test_unreachable_model_fails_with_pc_command(monkeypatch, tmp_path, capsys):
     assert excinfo.value.code == 1
     out = capsys.readouterr().out
     assert "OLLAMA_HOST" in out
+
+
+# --- review findings (codex, 2026-07-17) ---
+
+
+def test_run_pins_and_records_coach_style(tmp_path, monkeypatch, fake_agent):
+    monkeypatch.setenv("LCA_TEACHING_STYLE", "direct")
+    seen_styles = []
+
+    _, _ = fake_agent
+    import os
+
+    original = eval_learning.run_agent
+
+    def spy(question, session=None, **kwargs):
+        seen_styles.append(os.getenv("LCA_TEACHING_STYLE"))
+        return original(question, session=session, **kwargs)
+
+    monkeypatch.setattr(eval_learning, "run_agent", spy)
+
+    text = run_and_read(tmp_path, monkeypatch)
+
+    # The coach rubric must run under coach, whatever the shell says…
+    assert set(seen_styles) == {"coach"}
+    # …and the report records the effective style.
+    assert "style: coach" in text
+    # …and the caller's environment is restored afterwards.
+    assert os.getenv("LCA_TEACHING_STYLE") == "direct"
+
+
+def test_model_digest_read_from_api_tags(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "models": [
+                    {"name": "other:1b", "digest": "aaa"},
+                    {"name": eval_learning.AGENT_MODEL, "digest": "sha256:bbb"},
+                ]
+            }
+
+    monkeypatch.setattr(
+        eval_learning.httpx, "get", lambda url, timeout: FakeResponse()
+    )
+
+    assert eval_learning._model_digest() == "sha256:bbb"
+
+
+def test_second_run_same_day_does_not_overwrite(tmp_path, monkeypatch, fake_agent):
+    monkeypatch.setattr(eval_learning, "OUTPUT_DIR", tmp_path)
+
+    first = eval_learning.run_rubric(root=tmp_path)
+    second = eval_learning.run_rubric(root=tmp_path)
+
+    assert first != second
+    assert first.exists() and second.exists()
+
+
+def test_mutation_proposals_are_auto_declined_and_logged(tmp_path, monkeypatch):
+    def fake_run_agent(question, session=None, confirm=None, **kwargs):
+        # Simulate the model proposing an edit mid-turn.
+        assert confirm is not None, "eval must provide a confirmation channel"
+        accepted = confirm("edit_file src/x.py", "--- diff ---")
+        reply = "declined" if not accepted else "APPLIED"
+        session.messages.extend(
+            [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": reply},
+            ]
+        )
+        return reply, []
+
+    monkeypatch.setattr(eval_learning, "run_agent", fake_run_agent)
+    monkeypatch.setattr(eval_learning, "OUTPUT_DIR", tmp_path)
+
+    text = eval_learning.run_rubric(root=tmp_path).read_text()
+
+    assert "APPLIED" not in text  # zero unconfirmed mutations, structurally
+    assert "proposed mutation (auto-declined for eval): edit_file src/x.py" in text
+
+
+def test_direct_style_keeps_shared_discipline(monkeypatch):
+    import agent
+
+    monkeypatch.setenv("LCA_TEACHING_STYLE", "direct")
+
+    prompt = agent.system_prompt()
+
+    # Depth changes; discipline doesn't (conflict + declined-edit rules).
+    assert "conflict" in prompt.lower()
+    assert "declined" in prompt.lower()
+
+
+def test_doctor_reports_effective_style_not_raw_env(monkeypatch, capsys):
+    import sys
+
+    import ask
+
+    monkeypatch.setenv("LCA_TEACHING_STYLE", "sensei")
+    monkeypatch.setattr(sys, "argv", ["lca", "doctor"])
+
+    ask.main()
+
+    out = capsys.readouterr().out
+    assert "style: coach" in out
+    assert "sensei" not in out

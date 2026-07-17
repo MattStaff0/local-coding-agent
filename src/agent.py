@@ -55,37 +55,45 @@ End answers about code with "Evidence:" followed by path:line citations
 from your tool results. Never cite lines you did not read.
 """
 
-# The learning contract (workstream 05). Two styles, one discipline: coach
-# defaults to the hint ladder, direct answers immediately — evidence labels
-# and safety are identical in both. Depth is conversational, never a mode.
+# The learning contract (workstream 05). Two styles, ONE discipline block:
+# only answer depth varies with style — evidence labels, conflict handling,
+# and declined-edit behavior are identical in coach and direct.
+_DISCIPLINE_BLOCK = """\
+Evidence discipline (always):
+- Label every claim: "the file says (path:line)", "the docs say [n]", or
+  "I infer". If you found no evidence, say so instead of guessing.
+- If file and docs evidence conflict, name the conflict; never pick silently.
+- After a declined edit, do not re-propose the same diff; explain instead.
+"""
+
 _COACH_BLOCK = """\
 Teaching contract:
 - First reply to a debugging or how-to question: name the likely concept in
   1-2 sentences, cite evidence, give exactly one next check to run. Stop.
-- Label every claim: "the file says (path:line)", "the docs say [n]", or
-  "I infer". If you found no evidence, say so instead of guessing.
 - No full code or full solution at the hint stage. If the user says
   "show me", give a sketch (pseudocode or a minimal example). If they ask
   for the code or say "apply it", give the solution or propose the edit.
 - If the user asks for a direct answer, give it this turn - still cite.
 - Never only ask questions: every reply gives one concrete next action.
-- If file and docs evidence conflict, name the conflict; never pick silently.
 - Explain the concept before proposing an edit unless asked only to implement.
-- After a declined edit, return to coaching; do not re-propose the same diff.
 """
 
 _DIRECT_BLOCK = """\
 Style: Answer directly first with the complete answer, then offer one short
-optional deepening step. Keep the evidence labels: "the file says
-(path:line)", "the docs say [n]", or "I infer". Cite only what you read.
+optional deepening step.
 """
 
 
+def teaching_style() -> str:
+    """The effective style: anything that isn't exactly 'direct' is coach."""
+    value = os.getenv("LCA_TEACHING_STYLE", "coach").strip().lower()
+    return "direct" if value == "direct" else "coach"
+
+
 def system_prompt() -> str:
-    """Base tool rules plus the active teaching style (coach by default)."""
-    style = os.getenv("LCA_TEACHING_STYLE", "coach").strip().lower()
-    block = _DIRECT_BLOCK if style == "direct" else _COACH_BLOCK
-    return _BASE_PROMPT + "\n" + block
+    """Base tool rules + shared evidence discipline + the active style."""
+    style_block = _DIRECT_BLOCK if teaching_style() == "direct" else _COACH_BLOCK
+    return _BASE_PROMPT + "\n" + _DISCIPLINE_BLOCK + "\n" + style_block
 
 TOOL_SCHEMAS = [
     {

@@ -642,7 +642,7 @@ def doctor() -> None:
     print(f"  OLLAMA_HOST:   {host}")
     print(f"  chat model:    {rag.CHAT_MODEL}")
     print(f"  prompt rev:    {agent_module.PROMPT_REVISION} "
-          f"(style: {os.getenv('LCA_TEACHING_STYLE', 'coach')})")
+          f"(style: {agent_module.teaching_style()})")
     print(f"  embed model:   {rag.EMBED_MODEL}")
     print(f"  reranker:      {reranker}")
     print(f"  docs index:    {_index_summary(paths.MANIFEST_PATH)}")
