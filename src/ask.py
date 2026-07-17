@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,10 @@ import paths
 import rag
 import rerank
 import ui
-from agent import AgentSession, format_agent_reply, parse_agent_command, run_agent
+from agent import AgentSession, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
     NoRelevantDocsError,
-    answer_code_question,
-    answer_question,
     list_sources,
     source_legend,
 )
@@ -39,7 +38,55 @@ MAX_SAVED_MESSAGES = 100
 EXPORT_DIR = Path(os.getenv("STUDY_NOTES_DIR", paths.PROJECT_ROOT / "study-notes"))
 
 
-def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
+@dataclass(frozen=True)
+class AgentTurn:
+    question: str
+    answer: str
+    trace: list[str]
+    doc_sources: list[str]
+
+
+def run_agent_turn(
+    question: str,
+    *,
+    session: AgentSession,
+    renderer,
+    confirm,
+    mcp,
+) -> AgentTurn:
+    """Run and render one agent turn for every free-form CLI entry path."""
+    message_start = len(session.messages)
+    answer, trace = run_agent(
+        question,
+        session=session,
+        confirm=confirm,
+        mcp=mcp,
+        on_token=renderer.on_token,
+    )
+    renderer.finish_answer()
+
+    if trace:
+        renderer.show_message(
+            "Tool calls:\n" + "\n".join(f"  {entry}" for entry in trace)
+        )
+
+    doc_sources: list[str] = []
+    for message in session.messages[message_start:]:
+        if message.get("role") != "tool" or message.get("tool_name") != "search_docs":
+            continue
+        for line in str(message.get("content", "")).splitlines():
+            if re.match(r"^\[\d+\] ", line) and line not in doc_sources:
+                doc_sources.append(line)
+
+    if doc_sources:
+        renderer.show_sources(doc_sources)
+
+    return AgentTurn(question, answer, trace, doc_sources)
+
+
+def load_history(
+    path: Path = HISTORY_FILE, root: Path | None = None
+) -> list[dict[str, str]]:
     """Load saved chat history; only a missing file is a silent fresh start.
 
     An unreadable file is preserved as a .bak before the next save can
@@ -59,7 +106,19 @@ def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
         history = None
 
     if isinstance(history, list):
-        return history
+        if root is None or root == paths.PROJECT_ROOT.expanduser().resolve():
+            return history
+        return []
+
+    if (
+        isinstance(history, dict)
+        and history.get("version") == 2
+        and isinstance(history.get("sessions"), dict)
+    ):
+        if root is None:
+            return []
+        messages = history["sessions"].get(str(root), [])
+        return messages if isinstance(messages, list) else []
 
     backup = path.with_suffix(path.suffix + ".bak")
     path.rename(backup)
@@ -68,18 +127,68 @@ def load_history(path: Path = HISTORY_FILE) -> list[dict[str, str]]:
 
 
 def save_history(
-    history: list[dict[str, str]], path: Path = HISTORY_FILE
+    history: list[dict[str, str]],
+    path: Path = HISTORY_FILE,
+    root: Path | None = None,
 ) -> None:
     """Persist the most recent chat messages to disk."""
+    if root is not None:
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            existing = None
+        except json.JSONDecodeError:
+            backup = path.with_suffix(path.suffix + ".bak")
+            path.rename(backup)
+            existing = None
+        except OSError:
+            existing = None
+
+        if isinstance(existing, list):
+            sessions = {
+                str(paths.PROJECT_ROOT.expanduser().resolve()): existing[
+                    -MAX_SAVED_MESSAGES:
+                ]
+            }
+        elif (
+            isinstance(existing, dict)
+            and existing.get("version") == 2
+            and isinstance(existing.get("sessions"), dict)
+        ):
+            sessions = dict(existing["sessions"])
+        else:
+            sessions = {}
+
+        sessions[str(root)] = history[-MAX_SAVED_MESSAGES:]
+        path.write_text(
+            json.dumps({"version": 2, "sessions": sessions}, indent=2),
+            encoding="utf-8",
+        )
+        return
+
     path.write_text(
         json.dumps(history[-MAX_SAVED_MESSAGES:], indent=2), encoding="utf-8"
     )
 
 
+def clean_history(messages: list[Any]) -> list[dict[str, str]]:
+    """Project an agent transcript into safe persisted user/final-answer turns."""
+    clean: list[dict[str, str]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            clean.append({"role": "user", "content": str(message.get("content", ""))})
+        elif role == "assistant" and not message.get("tool_calls"):
+            clean.append(
+                {"role": "assistant", "content": str(message.get("content", ""))}
+            )
+    return clean
+
+
 def export_note(
     question: str,
     answer: str,
-    metadatas: list[dict[str, Any]],
+    metadatas: list[dict[str, Any] | str],
     notes_dir: Path = EXPORT_DIR,
 ) -> Path:
     """Write one answered question as a markdown study note.
@@ -111,7 +220,12 @@ def export_note(
 
     if metadatas:
         lines.append("## Sources")
-        lines.extend(f"- {line}" for line in source_legend(metadatas))
+        source_lines = (
+            list(metadatas)
+            if isinstance(metadatas[0], str)
+            else source_legend(metadatas)
+        )
+        lines.extend(f"- {line}" for line in source_lines)
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -153,21 +267,26 @@ def safe_list_sources() -> list[str]:
         return []
 
 
-def start_mcp():
+def start_mcp(root: Path | None = None):
     """Start MCP servers from mcp.json, once per chat process.
 
     Returns None when nothing is configured or startup fails — the agent
     then runs with native tools only, which is a degradation, not an error.
     """
+    manager = None
     try:
         config = mcp_client.load_config(paths.PROJECT_ROOT / "mcp.json")
 
         if not config.get("servers"):
             return None
 
-        manager = mcp_client.MCPManager(config)
+        manager = mcp_client.MCPManager(
+            config, root=canonical_root(root if root is not None else Path.cwd())
+        )
         manager.start()
     except Exception as error:
+        if manager is not None:
+            manager.stop()
         # A typo in mcp.json must degrade to native tools, not kill the chat.
         print(f"(mcp unavailable: {type(error).__name__}: {error})")
         return None
@@ -176,14 +295,20 @@ def start_mcp():
 
 
 HELP_TEXT = """\
+Every free-form prompt uses the agent over current saved files and docs.
+Writes and commands always require confirmation.
 Commands:
   /help             show this help
+  /status           show root, session size, and docs scope
+  /root [path]      show or change root (a change starts fresh)
+  /reset            clear this root's session
   /sources          list indexed doc sources
-  /source <name>    answer only from one source (/source all to reset)
-  /code <question>  answer from the indexed code (ingest_code.py first)
-  /agent <question> search this codebase live with tools
+  /source <name>    constrain docs search (/source all to reset)
   /export           save the last answer as a study note
-  /exit             quit"""
+  /exit             quit
+Compatibility aliases (deprecated for removal after one release):
+  /agent <question> same as asking directly
+  /code <question>  same as asking directly"""
 
 
 def apply_source_command(
@@ -232,6 +357,19 @@ def apply_source_command(
     return False, active_source, ""
 
 
+def canonical_root(value: str | Path) -> Path:
+    """Expand, validate, and canonicalize one agent root."""
+    supplied = str(value)
+    candidate = Path(value).expanduser()
+    try:
+        if not candidate.is_dir():
+            detail = "not a directory" if candidate.exists() else "no such directory"
+            raise ValueError(f"{supplied}: {detail}")
+        return candidate.resolve()
+    except OSError as error:
+        raise ValueError(f"{supplied}: cannot access ({error})") from error
+
+
 def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) -> None:
     """Run an interactive terminal chat with persistent memory."""
     renderer = renderer or ui.make_renderer()
@@ -239,30 +377,44 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
 
     # Pass the module globals explicitly: default arguments bind at def time,
     # which would ignore a HISTORY_FILE override (tests, future config).
-    history = load_history(HISTORY_FILE)
-    active_source: str | None = None
-    last_export: tuple[str, str, list[dict[str, Any]]] | None = None
-    agent_session: AgentSession | None = (
-        AgentSession(root=agent_root) if agent_root is not None else None
-    )
+    root = canonical_root(agent_root if agent_root is not None else Path.cwd())
+    history = load_history(HISTORY_FILE, root=root)
+    last_export: tuple[str, str, list[dict[str, Any] | str]] | None = None
+    agent_session = AgentSession(root=root, messages=list(history))
     mcp_manager = None
     mcp_started = False
+    deprecated_aliases: set[str] = set()
 
-    renderer.show_message("Local RAG chat")
+    renderer.show_message("Local coding agent")
     renderer.show_message("Type your question, /help for commands, /exit to quit.")
-    if agent_session is not None:
-        renderer.show_message(f"Agent root: {agent_session.root}")
+    renderer.show_message(f"Agent root: {agent_session.root}")
 
     if history:
         renderer.show_message(f"(restored {len(history)} messages from {HISTORY_FILE})")
 
     while True:
-        prompt_text = f"[{active_source}] You: " if active_source else "You: "
-        question = read_input(prompt_text).strip()
+        prompt_text = (
+            f"[{agent_session.docs_source}] You: "
+            if agent_session.docs_source
+            else "You: "
+        )
+        try:
+            question = read_input(prompt_text).strip()
+        except (EOFError, KeyboardInterrupt, StopIteration):
+            if mcp_manager is not None:
+                mcp_manager.stop()
+            renderer.show_message("Goodbye.")
+            return
 
         # Ignore blank lines so accidental Enter presses do not call the model.
         if not question:
             continue
+
+        def confirm(description: str, preview: str) -> bool:
+            renderer.show_message(f"\n{description}")
+            if preview != description:
+                renderer.show_message(preview)
+            return read_input("Apply? [y/N]: ").strip().lower() in {"y", "yes"}
 
         if question.lower() in {"/exit", "/quit", "exit", "quit"}:
             if mcp_manager is not None:
@@ -270,11 +422,103 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
             renderer.show_message("Goodbye.")
             return
 
-        if question == "/help":
+        compatibility_question = False
+        agent_command = parse_agent_command(question)
+        if agent_command is not None:
+            if "/agent" not in deprecated_aliases:
+                renderer.show_message(
+                    "(deprecated: /agent is no longer needed; ask directly)"
+                )
+                deprecated_aliases.add("/agent")
+            subcommand, argument = agent_command
+            if subcommand == "status":
+                question = "/status"
+            elif subcommand == "reset":
+                question = "/reset"
+            elif subcommand == "root":
+                if not argument:
+                    renderer.show_error("Usage: /agent root <path>")
+                    continue
+                question = f"/root {argument}"
+            else:
+                question = argument
+                compatibility_question = True
+
+        if not compatibility_question and (
+            question == "/code" or question.startswith("/code ")
+        ):
+            if "/code" not in deprecated_aliases:
+                renderer.show_message(
+                    "(deprecated: /code now uses the live agent; ask directly)"
+                )
+                deprecated_aliases.add("/code")
+            code_question = question.removeprefix("/code").strip()
+            if not code_question:
+                renderer.show_message(
+                    "Usage: /code <question> (deprecated; ask directly instead)."
+                )
+                continue
+            question = code_question
+            compatibility_question = True
+
+        if not compatibility_question and question == "/help":
             renderer.show_message(HELP_TEXT)
             continue
 
-        if question == "/export":
+        if not compatibility_question and question == "/status":
+            mcp_status = (
+                "not started"
+                if not mcp_started
+                else ("loaded" if mcp_manager is not None else "native only")
+            )
+            renderer.show_message(
+                f"Agent root: {agent_session.root} "
+                f"({len(agent_session.messages)} messages); "
+                f"source: {agent_session.docs_source or 'all'}; "
+                f"MCP: {mcp_status}; mutations: confirmation required"
+            )
+            continue
+
+        if not compatibility_question and question == "/reset":
+            agent_session = AgentSession(root=agent_session.root)
+            last_export = None
+            try:
+                save_history([], HISTORY_FILE, root=agent_session.root)
+            except OSError as error:
+                renderer.show_message(f"(could not save chat history: {error})")
+            renderer.show_message("Agent session cleared.")
+            continue
+
+        if not compatibility_question and (
+            question == "/root" or question.startswith("/root ")
+        ):
+            argument = question.removeprefix("/root").strip()
+            if not argument:
+                renderer.show_message(f"Agent root: {agent_session.root}")
+                continue
+            try:
+                new_root = canonical_root(argument)
+            except ValueError as error:
+                detail = str(error)
+                if "no such directory" in detail:
+                    renderer.show_error(f"No such directory: {argument}")
+                else:
+                    renderer.show_error(detail)
+                continue
+            if mcp_manager is not None:
+                mcp_manager.stop()
+            mcp_manager = None
+            mcp_started = False
+            agent_session = AgentSession(root=new_root)
+            last_export = None
+            try:
+                save_history([], HISTORY_FILE, root=new_root)
+            except OSError as error:
+                renderer.show_message(f"(could not save chat history: {error})")
+            renderer.show_message(f"Agent root set to {new_root} (fresh session).")
+            continue
+
+        if not compatibility_question and question == "/export":
             if last_export is None:
                 renderer.show_message("Nothing to export yet — ask a question first.")
                 continue
@@ -289,130 +533,46 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
             renderer.show_message(f"Saved study note: {path}")
             continue
 
-        if question == "/code" or question.startswith("/code "):
-            code_question = question.removeprefix("/code").strip()
-
-            if not code_question:
-                renderer.show_message(
-                    "Usage: /code <question> — answers from the code index "
-                    "(build it with 'python src/ingest_code.py <repo-path>')."
-                )
-                continue
-
-            try:
-                with renderer.status("thinking…"):
-                    answer, metadatas = answer_code_question(
-                        code_question, history, on_token=renderer.on_token
-                    )
-            except Exception as error:
-                renderer.show_error(describe_error(error))
-                continue
-
-            renderer.finish_answer()
-            renderer.show_sources(source_legend(metadatas))
-
-            history.append({"role": "user", "content": code_question})
-            history.append({"role": "assistant", "content": answer})
-            last_export = (code_question, answer, metadatas)
-
-            try:
-                save_history(history, HISTORY_FILE)
-            except OSError as error:
-                renderer.show_message(f"(could not save chat history: {error})")
-            continue
-
-        agent_command = parse_agent_command(question)
-        if agent_command is not None:
-            subcommand, argument = agent_command
-
-            if subcommand == "status":
-                if agent_session is None:
-                    renderer.show_message(
-                        "No agent session yet. Ask with /agent <question>."
-                    )
-                else:
-                    renderer.show_message(
-                        f"Agent root: {agent_session.root} "
-                        f"({len(agent_session.messages)} messages)"
-                    )
-                continue
-
-            if subcommand == "reset":
-                agent_session = None
-                renderer.show_message("Agent session cleared.")
-                continue
-
-            if subcommand == "root":
-                if not argument:
-                    renderer.show_error("Usage: /agent root <path>")
-                    continue
-                new_root = Path(argument).expanduser()
-                if not new_root.is_dir():
-                    renderer.show_error(f"No such directory: {argument}")
-                    continue
-                # Fresh session on purpose: old context describes the old
-                # repo, and carrying it over invites cross-repo hallucination.
-                agent_session = AgentSession(root=new_root)
-                renderer.show_message(f"Agent root set to {new_root} (fresh session).")
-                continue
-
-            if agent_session is None:
-                agent_session = AgentSession(root=Path.cwd())
-
-            if not mcp_started:
-                # One manager per chat process, started lazily so plain RAG
-                # chats never pay the server-spawn cost.
-                mcp_manager = start_mcp()
-                mcp_started = True
-
-            def confirm(description: str, preview: str) -> bool:
-                renderer.show_message(f"\n{description}")
-                if preview != description:
-                    renderer.show_message(preview)
-                return read_input("Apply? [y/N]: ").strip().lower() in {"y", "yes"}
-
-            try:
-                answer, trace = run_agent(
-                    argument,
-                    session=agent_session,
-                    confirm=confirm,
-                    mcp=mcp_manager,
-                )
-            except Exception as error:
-                renderer.show_error(f"\n{describe_error(error)}")
-                continue
-
-            renderer.show_message("\n" + format_agent_reply(answer, trace))
-            continue
-
-        handled, active_source, message = apply_source_command(
-            question, active_source
+        handled, active_source, message = (
+            (False, agent_session.docs_source, "")
+            if compatibility_question
+            else apply_source_command(question, agent_session.docs_source)
         )
         if handled:
+            agent_session.docs_source = active_source
             renderer.show_message(message)
             continue
 
+        if not mcp_started:
+            mcp_manager = start_mcp(agent_session.root)
+            mcp_started = True
+
         try:
-            # The answer streams to the terminal as the model writes it.
             with renderer.status("thinking…"):
-                answer, metadatas = answer_question(
-                    question, history, active_source, on_token=renderer.on_token
+                turn = run_agent_turn(
+                    question,
+                    session=agent_session,
+                    renderer=renderer,
+                    confirm=confirm,
+                    mcp=mcp_manager,
                 )
+        except (EOFError, KeyboardInterrupt):
+            if mcp_manager is not None:
+                mcp_manager.stop()
+            renderer.show_message("Goodbye.")
+            return
         except Exception as error:
             renderer.show_error(describe_error(error))
             continue
 
-        renderer.finish_answer()
-        renderer.show_sources(source_legend(metadatas))
-
-        # Save the turn after the model answers so follow-up questions have
-        # enough context to understand words like "that" or "it".
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": answer})
-        last_export = (question, answer, metadatas)
+        last_export = (question, turn.answer, turn.doc_sources)
 
         try:
-            save_history(history, HISTORY_FILE)
+            save_history(
+                clean_history(agent_session.messages),
+                HISTORY_FILE,
+                root=agent_session.root,
+            )
         except OSError as error:
             # Losing persistence is worth a warning, not a dead session.
             renderer.show_message(f"(could not save chat history: {error})")
@@ -464,8 +624,10 @@ def doctor() -> None:
     print(f"  reranker:      {reranker}")
     print(f"  docs index:    {_index_summary(paths.MANIFEST_PATH)}")
     print(f"  code index:    {_index_summary(rag.CODE_MANIFEST_PATH)}")
-    print(f"  agent root:    the directory you launch from"
-          " (override: lca --root <path>, or /agent root <path> in chat)")
+    print(
+        "  agent root:    current directory, canonicalized at start"
+        " (override: lca --root <path>, or /root <path> in chat)"
+    )
 
 
 def main() -> None:
@@ -481,27 +643,20 @@ def main() -> None:
         doctor()
         return
 
+    selected_root: Path | None = None
     if args and args[0] == "--root":
         if len(args) < 2:
             print("Usage: lca --root <path>")
             raise SystemExit(2)
-        root = Path(args[1]).expanduser()
         try:
-            if not root.is_dir():
-                detail = (
-                    "not a directory" if root.exists() else "no such directory"
-                )
-                print(f"--root {args[1]}: {detail}")
-                raise SystemExit(2)
-        except OSError as error:
-            # is_dir() raises on e.g. permission-denied parents.
-            print(f"--root {args[1]}: cannot access ({error})")
+            selected_root = canonical_root(args[1])
+        except ValueError as error:
+            print(f"--root {error}")
             raise SystemExit(2)
-        if args[2:]:
-            print("--root starts chat mode; ask one-shot questions without it.")
-            raise SystemExit(2)
-        chat_loop(agent_root=root.resolve())
-        return
+        args = args[2:]
+        if not args:
+            chat_loop(agent_root=selected_root)
+            return
 
     if not args:
         chat_loop()
@@ -516,20 +671,25 @@ def main() -> None:
     # This keeps the old one-shot usage:
     # python src/ask.py "How do I make a PyTorch model?"
     question = " ".join(args)
+    root = selected_root or canonical_root(Path.cwd())
 
     renderer = ui.make_renderer()
-    renderer.show_message("Answer:\n")
+    mcp_manager = start_mcp(root)
 
     try:
-        answer, metadatas = answer_question(
-            question, history=[], on_token=renderer.on_token
+        run_agent_turn(
+            question,
+            session=AgentSession(root=root),
+            renderer=renderer,
+            confirm=None,
+            mcp=mcp_manager,
         )
     except Exception as error:
         renderer.show_error(describe_error(error))
         raise SystemExit(1)
-
-    renderer.finish_answer()
-    renderer.show_sources(source_legend(metadatas))
+    finally:
+        if mcp_manager is not None:
+            mcp_manager.stop()
 
 
 if __name__ == "__main__":

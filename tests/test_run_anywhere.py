@@ -35,6 +35,14 @@ def test_doctor_reports_home_env_and_models(capsys):
     assert "embed model" in out
 
 
+def test_doctor_describes_canonical_default_agent_root(capsys):
+    ask.doctor()
+    out = capsys.readouterr().out
+    assert "current directory" in out
+    assert "/root" in out
+    assert "/agent root" not in out
+
+
 def test_doctor_counts_manifest_chunks_and_sources(tmp_path, monkeypatch, capsys):
     manifest = tmp_path / "manifest.jsonl"
     records = [
@@ -197,16 +205,25 @@ def test_main_root_requires_a_path(monkeypatch, capsys):
     assert excinfo.value.code == 2
 
 
-def test_main_root_rejects_trailing_args(monkeypatch, tmp_path, capsys):
+def test_main_root_accepts_multiword_one_shot(monkeypatch, tmp_path):
+    seen = {}
     monkeypatch.setattr(
         sys, "argv", ["lca", "--root", str(tmp_path), "stray", "question"]
     )
+    monkeypatch.setattr(
+        ask,
+        "run_agent_turn",
+        lambda question, *, session, **kwargs: (
+            seen.update(question=question, root=session.root)
+            or ask.AgentTurn(question, "ok", [], [])
+        ),
+    )
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)
+    monkeypatch.setattr(ask.ui, "make_renderer", lambda: _RecordingRenderer())
 
-    with pytest.raises(SystemExit) as excinfo:
-        ask.main()
+    ask.main()
 
-    assert excinfo.value.code == 2
-    assert "chat mode" in capsys.readouterr().out
+    assert seen == {"question": "stray question", "root": tmp_path.resolve()}
 
 
 def test_main_root_expands_tilde(monkeypatch, tmp_path):
@@ -239,9 +256,9 @@ def test_chat_loop_agent_root_preset_shows_in_status(monkeypatch, tmp_path):
     # literal word "status" to the model as a question.
     inputs = iter(["/agent", "/exit"])
 
-    monkeypatch.setattr(ask, "load_history", lambda path: [])
-    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
-    monkeypatch.setattr(ask, "start_mcp", lambda: None)
+    monkeypatch.setattr(ask, "load_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ask, "save_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)
 
     ask.chat_loop(
         renderer=renderer,
@@ -252,7 +269,10 @@ def test_chat_loop_agent_root_preset_shows_in_status(monkeypatch, tmp_path):
     # Assert the /agent status reply specifically — the startup banner also
     # prints the root, so a bare substring check would pass with a broken
     # status command.
-    assert f"Agent root: {tmp_path} (0 messages)" in renderer.messages
+    assert any(
+        f"Agent root: {tmp_path.resolve()} (0 messages)" in message
+        for message in renderer.messages
+    )
 
 
 # --- console-script entry points ---

@@ -67,9 +67,9 @@ def test_root_change_starts_fresh_session(tmp_path, monkeypatch):
         "/exit",
     ])
     monkeypatch.setattr(ask, "run_agent", fake_run_agent)
-    monkeypatch.setattr(ask, "start_mcp", lambda: None)  # never spawn servers
-    monkeypatch.setattr(ask, "load_history", lambda path: [])
-    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)  # never spawn servers
+    monkeypatch.setattr(ask, "load_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ask, "save_history", lambda *args, **kwargs: None)
 
     ask.chat_loop(
         renderer=ui.PlainRenderer(),
@@ -112,9 +112,9 @@ def test_chat_confirm_accepts_only_yes(tmp_path, monkeypatch):
         "/exit",
     ])
     monkeypatch.setattr(ask, "run_agent", fake_run_agent)
-    monkeypatch.setattr(ask, "start_mcp", lambda: None)
-    monkeypatch.setattr(ask, "load_history", lambda path: [])
-    monkeypatch.setattr(ask, "save_history", lambda history, path: None)
+    monkeypatch.setattr(ask, "start_mcp", lambda *args: None)
+    monkeypatch.setattr(ask, "load_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ask, "save_history", lambda *args, **kwargs: None)
 
     ask.chat_loop(
         renderer=ui.PlainRenderer(),
