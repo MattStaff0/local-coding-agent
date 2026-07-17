@@ -27,9 +27,13 @@ from agent_tools import (
 AGENT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5-coder:3b")
 MAX_ITERATIONS = 8
 
+# Bumped on ANY system-prompt change: eval results are only comparable when
+# they record which prompt produced them.
+PROMPT_REVISION = "lc-1"
+
 # Terse on purpose: a 3B-12B model follows short, imperative instructions
 # far better than long prose. The "method" line is the core steering.
-SYSTEM_PROMPT = """\
+_BASE_PROMPT = """\
 You answer questions about the code in this project using tools.
 
 Tools:
@@ -50,6 +54,38 @@ approves or declines each change; a declined change is an answer, not an error.
 End answers about code with "Evidence:" followed by path:line citations
 from your tool results. Never cite lines you did not read.
 """
+
+# The learning contract (workstream 05). Two styles, one discipline: coach
+# defaults to the hint ladder, direct answers immediately — evidence labels
+# and safety are identical in both. Depth is conversational, never a mode.
+_COACH_BLOCK = """\
+Teaching contract:
+- First reply to a debugging or how-to question: name the likely concept in
+  1-2 sentences, cite evidence, give exactly one next check to run. Stop.
+- Label every claim: "the file says (path:line)", "the docs say [n]", or
+  "I infer". If you found no evidence, say so instead of guessing.
+- No full code or full solution at the hint stage. If the user says
+  "show me", give a sketch (pseudocode or a minimal example). If they ask
+  for the code or say "apply it", give the solution or propose the edit.
+- If the user asks for a direct answer, give it this turn - still cite.
+- Never only ask questions: every reply gives one concrete next action.
+- If file and docs evidence conflict, name the conflict; never pick silently.
+- Explain the concept before proposing an edit unless asked only to implement.
+- After a declined edit, return to coaching; do not re-propose the same diff.
+"""
+
+_DIRECT_BLOCK = """\
+Style: Answer directly first with the complete answer, then offer one short
+optional deepening step. Keep the evidence labels: "the file says
+(path:line)", "the docs say [n]", or "I infer". Cite only what you read.
+"""
+
+
+def system_prompt() -> str:
+    """Base tool rules plus the active teaching style (coach by default)."""
+    style = os.getenv("LCA_TEACHING_STYLE", "coach").strip().lower()
+    block = _DIRECT_BLOCK if style == "direct" else _COACH_BLOCK
+    return _BASE_PROMPT + "\n" + block
 
 TOOL_SCHEMAS = [
     {
@@ -463,7 +499,7 @@ def run_agent(
 
     for _ in range(max_iterations):
         message = _chat_once(
-            [{"role": "system", "content": SYSTEM_PROMPT}, *session.messages],
+            [{"role": "system", "content": system_prompt()}, *session.messages],
             tools,
             on_token,
         )

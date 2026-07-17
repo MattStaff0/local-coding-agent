@@ -26,7 +26,7 @@ def test_search_docs_is_registered_within_the_tool_cap():
 
 
 def test_system_prompt_requires_grounded_mixed_evidence():
-    prompt = agent.SYSTEM_PROMPT
+    prompt = agent.system_prompt()
 
     assert "library/API claims" in prompt
     assert "mixed questions" in prompt

@@ -19,6 +19,7 @@ import paths
 import rag
 import rerank
 import ui
+import agent as agent_module
 from agent import AgentSession, parse_agent_command, run_agent
 from rag import (
     EmptyIndexError,
@@ -489,7 +490,8 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
                 f"Agent root: {agent_session.root} "
                 f"({len(agent_session.messages)} messages); "
                 f"source: {agent_session.docs_source or 'all'}; "
-                f"MCP: {mcp_status}; mutations: confirmation required"
+                f"MCP: {mcp_status}; prompt: {agent_module.PROMPT_REVISION}; "
+                "mutations: confirmation required"
             )
             continue
 
@@ -639,6 +641,8 @@ def doctor() -> None:
     print(f"  .env file:     {paths.ENV_FILE} ({env_state})")
     print(f"  OLLAMA_HOST:   {host}")
     print(f"  chat model:    {rag.CHAT_MODEL}")
+    print(f"  prompt rev:    {agent_module.PROMPT_REVISION} "
+          f"(style: {os.getenv('LCA_TEACHING_STYLE', 'coach')})")
     print(f"  embed model:   {rag.EMBED_MODEL}")
     print(f"  reranker:      {reranker}")
     print(f"  docs index:    {_index_summary(paths.MANIFEST_PATH)}")
