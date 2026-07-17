@@ -12,6 +12,7 @@ import chromadb.errors
 import httpx
 
 import attachments as attachments_module
+import docs_cli
 import manifest as manifest_module
 import mcp_client
 import paths
@@ -660,6 +661,17 @@ def main() -> None:
             raise SystemExit(2)
         doctor()
         return
+
+    if args and args[0] == "docs":
+        subcommand = args[1] if len(args) > 1 else None
+        if subcommand == "status" and len(args) == 2:
+            docs_cli.status(root=canonical_root(Path.cwd()))
+            return
+        if subcommand == "sync" and len(args) <= 3:
+            docs_cli.sync(args[2] if len(args) == 3 else None)
+            return
+        print("Usage: lca docs status | lca docs sync [source]")
+        raise SystemExit(2)
 
     selected_root: Path | None = None
     contexts: list[str] = []

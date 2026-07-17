@@ -25,16 +25,58 @@ sklearn:
   - https://scikit-learn.org/stable/modules/tree.html
   - https://scikit-learn.org/stable/modules/model_evaluation.html
 
+# Priority-0 sources (workstream 04): registry v2 with version metadata.
+# The stable/docs URLs record docs_version "stable-at-fetch"; swap in the
+# versioned_url_template pages when a project pins an older major.minor.
 pandas:
-  - https://pandas.pydata.org/docs/user_guide/10min.html
-  - https://pandas.pydata.org/docs/user_guide/indexing.html
-  - https://pandas.pydata.org/docs/user_guide/groupby.html
-  - https://pandas.pydata.org/docs/user_guide/merging.html
+  pages:
+    - https://pandas.pydata.org/docs/user_guide/10min.html
+    - https://pandas.pydata.org/docs/user_guide/indexing.html
+    - https://pandas.pydata.org/docs/user_guide/groupby.html
+    - https://pandas.pydata.org/docs/user_guide/merging.html
+    - https://pandas.pydata.org/docs/whatsnew/index.html
+  official_origins: [https://pandas.pydata.org]
+  distribution: pandas
+  import_names: [pandas]
+  docs_version_pattern: 'pandas\.pydata\.org/pandas-docs/version/(?P<version>[\d.]+)/'
+  # NOTE (2026-07-16): versioned URL pattern is an assumption pending a live
+  # check; the /docs/ pages are pandas 3.x as of 2026-06-28.
+  versioned_url_template: https://pandas.pydata.org/pandas-docs/version/{major_minor}/
+  refresh_ttl_days: 7
+  version_policy: major_minor
 
 numpy:
-  - https://numpy.org/doc/stable/user/absolute_beginners.html
-  - https://numpy.org/doc/stable/user/basics.broadcasting.html
-  - https://numpy.org/doc/stable/user/quickstart.html
+  pages:
+    - https://numpy.org/doc/stable/user/absolute_beginners.html
+    - https://numpy.org/doc/stable/user/basics.broadcasting.html
+    - https://numpy.org/doc/stable/user/quickstart.html
+  official_origins: [https://numpy.org]
+  distribution: numpy
+  import_names: [numpy]
+  docs_version_pattern: 'numpy\.org/doc/(?P<version>[\d.]+|stable)/'
+  # Verified 2026-07-16: numpy.org/doc/ lists /doc/2.5/ ... /doc/1.13/.
+  versioned_url_template: https://numpy.org/doc/{major_minor}/
+  refresh_ttl_days: 7
+  version_policy: major_minor
+
+tensorflow:
+  pages:
+    - https://www.tensorflow.org/guide/tensor
+    - https://www.tensorflow.org/guide/variable
+    - https://www.tensorflow.org/guide/autodiff
+    - https://www.tensorflow.org/guide/keras/sequential_model
+    - https://www.tensorflow.org/guide/keras/training_with_built_in_methods
+    - https://www.tensorflow.org/guide/data
+    - https://www.tensorflow.org/guide/effective_tf2
+    - https://www.tensorflow.org/tutorials/quickstart/beginner
+  official_origins: [https://www.tensorflow.org]
+  distribution: tensorflow
+  import_names: [tensorflow]
+  # Verified 2026-07-16: tensorflow.org/versions lists /versions/rX.Y/.
+  docs_version_pattern: 'tensorflow\.org/versions/r(?P<version>[\d.]+)/'
+  versioned_url_template: https://www.tensorflow.org/versions/r{major_minor}/
+  refresh_ttl_days: 14
+  version_policy: major_minor
 
 # --- Tool docs for planned work ---
 # Ollama: streaming answers, batch embeddings, and the future tool-calling

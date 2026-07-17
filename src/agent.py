@@ -199,7 +199,81 @@ TOOL_SCHEMAS = [
 ]
 
 
-def search_docs(query: str, source: str | None = None) -> str:
+def _registry() -> dict:
+    """Source registry for version metadata; absence degrades to no labels."""
+    try:
+        from fetch_docs import SOURCES_FILE, load_sources
+
+        return load_sources(SOURCES_FILE)
+    except Exception:
+        return {}
+
+
+def _fetched_age_days(fetched: str) -> int | None:
+    from datetime import date
+
+    try:
+        return (date.today() - date.fromisoformat(fetched)).days
+    except ValueError:
+        return None
+
+
+def _provenance_suffix(metadata: dict) -> str:
+    """'(docs v3.0, fetched 30d ago)' from chunk metadata, when present."""
+    parts = []
+    if metadata.get("docs_version"):
+        parts.append(f"docs v{metadata['docs_version']}")
+    if metadata.get("fetched"):
+        age = _fetched_age_days(metadata["fetched"])
+        if age is not None:
+            parts.append(f"fetched {age}d ago")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _mismatch_warnings(metadatas: list[dict], root: Path | None) -> list[str]:
+    """One warning per (source, docs version) whose docs mismatch the project.
+
+    Freshness is not compatibility: a chunk from pandas-3.x docs must be
+    flagged when the target project pins pandas 2.x, however fresh the cache.
+    """
+    if root is None:
+        return []
+
+    import project_versions
+
+    registry = _registry()
+    warnings: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    for metadata in metadatas:
+        docs_version = metadata.get("docs_version")
+        source = metadata.get("source")
+        config = registry.get(source)
+        if not docs_version or not config:
+            continue
+        key = (source, docs_version)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        distribution = config.get("distribution", source)
+        detected = project_versions.detect_versions(root, [distribution])[
+            distribution
+        ]
+        state = project_versions.compatibility(
+            detected.version, docs_version, config.get("version_policy", "major_minor")
+        )
+        if state == "mismatch":
+            warnings.append(
+                f"warning: these docs are for {distribution} {docs_version}, "
+                f"but this project has {distribution} {detected.version} "
+                f"({detected.confidence}) — behavior may differ."
+            )
+
+    return warnings
+
+
+def search_docs(query: str, source: str | None = None, root: Path | None = None) -> str:
     """Fetch the top documentation chunks for a query, labeled with sources.
 
     This is the bridge between the two halves of the project: the agent loop
@@ -229,12 +303,14 @@ def search_docs(query: str, source: str | None = None) -> str:
             "or answer from the code alone."
         )
 
-    return "\n\n".join(
-        f"{rag.chunk_label(number, metadata)}\n{document}"
+    blocks = [
+        f"{rag.chunk_label(number, metadata)}{_provenance_suffix(metadata)}\n{document}"
         for number, (document, metadata) in enumerate(
             zip(documents, metadatas), start=1
         )
-    )
+    ]
+
+    return "\n\n".join(_mismatch_warnings(metadatas, root) + blocks)
 
 
 def _gated_write(
@@ -279,7 +355,7 @@ def dispatch_tool(
             return read_file(root, arguments["path"], int(arguments.get("start_line", 1)))
 
         if name == "search_docs":
-            return search_docs(arguments["query"], arguments.get("source"))
+            return search_docs(arguments["query"], arguments.get("source"), root)
 
         if name == "edit_file":
             preview = preview_edit(

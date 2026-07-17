@@ -408,3 +408,80 @@ def test_unscoped_session_preserves_model_selected_source(monkeypatch, tmp_path)
     agent.run_agent("q", session=agent.AgentSession(root=tmp_path))
 
     assert seen["source"] == "numpy"
+
+
+# --- version-aware annotations (workstream 04) ---
+
+
+def _versioned_retrieval():
+    return _retrieval(
+        ["DataFrame.append was removed."],
+        [
+            {
+                "path": "docs/pandas/whatsnew.md",
+                "source": "pandas",
+                "docs_version": "3.0",
+                "fetched": "2020-01-01",
+            }
+        ],
+    )
+
+
+def test_search_docs_annotates_docs_version_and_age(monkeypatch, tmp_path):
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: _versioned_retrieval())
+
+    result = agent.search_docs("append removed")
+
+    assert "docs v3.0" in result
+    assert "fetched" in result and "d ago" in result
+
+
+def test_search_docs_warns_on_project_version_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: _versioned_retrieval())
+    monkeypatch.setattr(
+        agent,
+        "_registry",
+        lambda: {
+            "pandas": {"distribution": "pandas", "version_policy": "major_minor"}
+        },
+    )
+    (tmp_path / "requirements.txt").write_text("pandas==2.2.1\n")
+
+    result = agent.dispatch_tool(
+        "search_docs", {"query": "append removed"}, tmp_path
+    )
+
+    assert "warning" in result.lower()
+    assert "3.0" in result
+    assert "2.2.1" in result
+
+
+def test_search_docs_no_warning_when_versions_match(monkeypatch, tmp_path):
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: _versioned_retrieval())
+    monkeypatch.setattr(
+        agent,
+        "_registry",
+        lambda: {
+            "pandas": {"distribution": "pandas", "version_policy": "major_minor"}
+        },
+    )
+    (tmp_path / "requirements.txt").write_text("pandas==3.0.1\n")
+
+    result = agent.dispatch_tool(
+        "search_docs", {"query": "append removed"}, tmp_path
+    )
+
+    assert "warning" not in result.lower()
+
+
+def test_search_docs_without_provenance_is_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        rag,
+        "retrieve",
+        lambda *a, **k: _retrieval(["plain chunk"], [{"path": "docs/x.md"}]),
+    )
+
+    result = agent.search_docs("anything")
+
+    assert "docs v" not in result
+    assert "warning" not in result.lower()
