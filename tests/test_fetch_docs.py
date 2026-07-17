@@ -222,6 +222,8 @@ class FakeResponse:
         self._status_error = status_error
         self.headers = {"content-type": "text/html; charset=utf-8"}
         self.encoding = "utf-8"
+        self.status_code = 200
+        self.url = None
 
     def raise_for_status(self) -> None:
         if self._status_error:

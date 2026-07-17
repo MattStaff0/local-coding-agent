@@ -314,6 +314,23 @@ def _file_hash(text: str) -> str:
     return hashlib.sha256(f"{EMBED_MODEL}\n{text}".encode("utf-8")).hexdigest()
 
 
+def _doc_provenance(text: str) -> dict[str, str]:
+    """url/fetched/docs_version from a fetched doc's frontmatter (WS04).
+
+    Missing keys are simply absent — hand-written docs have no provenance,
+    and Chroma metadata cannot hold None values anyway.
+    """
+    provenance: dict[str, str] = {}
+    if not text.startswith("---") or text.count("---") < 2:
+        return provenance
+    header = text.split("---", 2)[1]
+    for key in ("url", "fetched", "docs_version"):
+        match = re.search(rf"^{key}: (.+)$", header, flags=re.MULTILINE)
+        if match:
+            provenance[key] = match.group(1).strip()
+    return provenance
+
+
 def _prepare_file(
     doc_file: Path, text: str, docs_dir: Path
 ) -> tuple[list[str], list[str], list[list[float]], list[dict[str, Any]]]:
@@ -338,6 +355,8 @@ def _prepare_file(
     documents = []
     metadatas = []
 
+    provenance = _doc_provenance(text)
+
     for i, chunk in enumerate(chunks):
         ids.append(chunk_id_for(doc_file, i, docs_dir))
         documents.append(chunk["text"])
@@ -349,6 +368,7 @@ def _prepare_file(
                 "heading": chunk["heading"],
                 "chunk_index": i,
                 "file_hash": digest,
+                **provenance,
             }
         )
 
