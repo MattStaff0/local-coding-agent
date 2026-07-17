@@ -198,3 +198,97 @@ def test_format_agent_reply_shows_the_tool_trace() -> None:
 
 def test_format_agent_reply_without_tools_is_just_the_answer() -> None:
     assert agent.format_agent_reply("Hi.", []) == "Hi."
+
+
+def test_run_agent_streams_and_reassembles_final_answer(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    seen: list[str] = []
+
+    def fake_chat(model, messages, tools, stream=False):
+        assert stream is True
+        return iter(
+            [
+                {"message": {"role": "assistant", "content": "hel"}},
+                {"message": {"role": "assistant", "content": "lo"}},
+            ]
+        )
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+
+    session = agent.AgentSession(root=project)
+    answer_text, trace = agent.run_agent(
+        "say hello", session=session, on_token=seen.append
+    )
+
+    assert answer_text == "hello"
+    assert seen == ["hel", "lo"]
+    assert trace == []
+    assert session.messages[-1] == {"role": "assistant", "content": "hello"}
+
+
+def test_streamed_tool_call_result_reaches_next_iteration(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    model_calls: list[list[dict]] = []
+    responses = iter(
+        [
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "grep",
+                                    "arguments": {"pattern": "retrieve"},
+                                }
+                            }
+                        ],
+                    }
+                }
+            ],
+            [
+                {"message": {"role": "assistant", "content": "Found "}},
+                {"message": {"role": "assistant", "content": "app.py:1."}},
+            ],
+        ]
+    )
+
+    def fake_chat(model, messages, tools, stream=False):
+        assert stream is True
+        model_calls.append(list(messages))
+        return iter(next(responses))
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+
+    answer_text, trace = agent.run_agent(
+        "where is retrieve?",
+        session=agent.AgentSession(root=project),
+        on_token=lambda token: None,
+    )
+
+    assert answer_text == "Found app.py:1."
+    assert trace == ["grep({'pattern': 'retrieve'})"]
+    assert any(
+        message.get("role") == "tool" and "app.py:1" in message["content"]
+        for message in model_calls[1]
+    )
+
+
+def test_nonstreaming_call_remains_supported_without_callback(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_chat(model, messages, tools, stream=False):
+        seen["stream"] = stream
+        return {"message": {"role": "assistant", "content": "ok"}}
+
+    monkeypatch.setattr(agent.ollama, "chat", fake_chat)
+
+    answer_text, _ = agent.run_agent("q", session=agent.AgentSession(root=project))
+
+    assert answer_text == "ok"
+    assert seen["stream"] is False

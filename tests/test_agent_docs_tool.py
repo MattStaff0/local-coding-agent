@@ -337,3 +337,74 @@ def test_docs_failure_does_not_abort_live_file_reasoning(monkeypatch, tmp_path):
     )
     assert "Documentation was unavailable" in answer
     assert "app.py:1" in answer
+
+
+def test_session_source_scope_overrides_model_search_docs_source(
+    monkeypatch, tmp_path
+):
+    seen = {}
+
+    def fake_retrieve(query, n_results=3, source=None):
+        seen["source"] = source
+        return _retrieval(["chunk"], [{"path": "docs/pandas/api.md"}])
+
+    responses = iter(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "search_docs",
+                                "arguments": {"query": "concat", "source": "numpy"},
+                            }
+                        }
+                    ],
+                }
+            },
+            {"message": {"role": "assistant", "content": "done"}},
+        ]
+    )
+    monkeypatch.setattr(rag, "retrieve", fake_retrieve)
+    monkeypatch.setattr(agent.ollama, "chat", lambda **kwargs: next(responses))
+
+    session = agent.AgentSession(root=tmp_path, docs_source="pandas")
+    agent.run_agent("q", session=session)
+
+    assert seen["source"] == "pandas"
+
+
+def test_unscoped_session_preserves_model_selected_source(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_retrieve(query, n_results=3, source=None):
+        seen["source"] = source
+        return _retrieval(["chunk"], [{"path": "docs/numpy/api.md"}])
+
+    responses = iter(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "search_docs",
+                                "arguments": {"query": "arrays", "source": "numpy"},
+                            }
+                        }
+                    ],
+                }
+            },
+            {"message": {"role": "assistant", "content": "done"}},
+        ]
+    )
+    monkeypatch.setattr(rag, "retrieve", fake_retrieve)
+    monkeypatch.setattr(agent.ollama, "chat", lambda **kwargs: next(responses))
+
+    agent.run_agent("q", session=agent.AgentSession(root=tmp_path))
+
+    assert seen["source"] == "numpy"
