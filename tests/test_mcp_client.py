@@ -124,3 +124,16 @@ def test_call_failure_is_a_string_not_an_exception():
 
     assert "MCP tool error" in manager.call("git_status", {})
     manager.stop()
+
+
+def test_stdio_server_uses_canonical_agent_root_as_cwd(tmp_path):
+    root = (tmp_path / "project")
+    root.mkdir()
+
+    params = mcp_client.stdio_server_parameters(
+        {"command": "uvx", "args": ["mcp-server-git"]}, root.resolve()
+    )
+
+    assert params.cwd == root.resolve()
+    assert params.command == "uvx"
+    assert params.args == ["mcp-server-git"]

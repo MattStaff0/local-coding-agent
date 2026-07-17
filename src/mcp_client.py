@@ -38,6 +38,17 @@ def to_ollama_schema(server: str, tool) -> dict:
     }
 
 
+def stdio_server_parameters(server_config: dict, root: Path):
+    """Build SDK stdio parameters rooted exactly where native tools operate."""
+    from mcp import StdioServerParameters
+
+    return StdioServerParameters(
+        command=server_config["command"],
+        args=server_config.get("args", []),
+        cwd=root,
+    )
+
+
 def allowed_tools(server: str, server_config: dict, tools: list) -> list:
     """Keep only the tools the config explicitly allowlists.
 
@@ -61,8 +72,9 @@ class MCPManager:
     function calls via run_coroutine_threadsafe.
     """
 
-    def __init__(self, config: dict, session_factory=None):
+    def __init__(self, config: dict, root: Path | None = None, session_factory=None):
         self._config = config
+        self.root = (root or Path.cwd()).resolve()
         self._session_factory = session_factory or self._sdk_session_factory
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -79,12 +91,10 @@ class MCPManager:
         """Connect to a stdio server with the official SDK (live use only)."""
 
         async def connect():
-            from mcp import ClientSession, StdioServerParameters
+            from mcp import ClientSession
             from mcp.client.stdio import stdio_client
 
-            params = StdioServerParameters(
-                command=server_config["command"], args=server_config.get("args", [])
-            )
+            params = stdio_server_parameters(server_config, self.root)
             read, write = await self._stack.enter_async_context(stdio_client(params))
             session = await self._stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
