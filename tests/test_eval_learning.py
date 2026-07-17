@@ -33,6 +33,8 @@ def fake_agent(monkeypatch):
 
 def run_and_read(tmp_path, monkeypatch) -> str:
     monkeypatch.setattr(eval_learning, "OUTPUT_DIR", tmp_path)
+    # Deterministic regardless of any locally running Ollama.
+    monkeypatch.setattr(eval_learning, "_model_digest", lambda: "unknown")
     report = eval_learning.run_rubric(root=tmp_path)
     return report.read_text()
 
@@ -42,12 +44,14 @@ def test_report_records_model_prompt_revision_and_date(
 ):
     import agent
 
+    # Deterministic regardless of any locally running Ollama.
+    monkeypatch.setattr(eval_learning, "_model_digest", lambda: "unknown")
+
     text = run_and_read(tmp_path, monkeypatch)
 
     assert agent.PROMPT_REVISION in text
     assert eval_learning.AGENT_MODEL in text
-    assert "digest:" in text
-    assert "unknown" in text  # Ollama unreachable in tests → digest unknown
+    assert "digest: unknown" in text
 
 
 def test_every_rubric_case_appears_with_all_turns(tmp_path, monkeypatch, fake_agent):

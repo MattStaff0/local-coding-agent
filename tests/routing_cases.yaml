@@ -1,0 +1,202 @@
+# Frozen routing-evaluation prompts (workstream 06). DO NOT tune these to
+# make numbers pass — they are the measurement, not the target. Expected
+# behavior is the evidence source of the final answer, never an exact tool
+# sequence (that would overfit one model's habits).
+
+# --- project-only (8) ---
+- id: proj-where-rrf
+  category: project
+  turns: ["where is the RRF fusion implemented in this repo?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, list_files]
+  mutation_expected: false
+- id: proj-doctor-network
+  category: project
+  turns: ["does lca doctor ever touch the network? prove it from the code"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file, list_files]
+  mutation_expected: false
+- id: proj-history-format
+  category: project
+  turns: ["what format is chat_history.json saved in?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, list_files, read_file]
+  mutation_expected: false
+- id: proj-tool-cap
+  category: project
+  turns: ["what happens if I configure more than 8 MCP tools?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, search_docs, list_files]
+  mutation_expected: false
+- id: proj-test-runner
+  category: project
+  turns: ["which commands is the run_command tool allowed to execute?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file]
+  mutation_expected: false
+- id: proj-symlink-policy
+  category: project
+  turns: ["how does this project stop a symlink from escaping the root?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file]
+  mutation_expected: false
+- id: proj-follow-structure
+  category: project
+  turns: ["list the modules under src and tell me which one owns retrieval"]
+  expected_evidence: project
+  acceptable_first_tools: [list_files, grep]
+  mutation_expected: false
+- id: proj-env-loading
+  category: project
+  turns: ["when is the .env file loaded relative to the ollama client?"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file]
+  mutation_expected: false
+
+# --- docs-only (8) ---
+- id: docs-broadcasting
+  category: docs
+  turns: ["how does numpy broadcasting decide if two shapes are compatible?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-groupby
+  category: docs
+  turns: ["what does pandas groupby actually return before aggregation?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-merge-how
+  category: docs
+  turns: ["explain the difference between inner and outer merge in pandas"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-tensor-basics
+  category: docs
+  turns: ["what is a tensor according to the tensorflow guide?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-np-copy-view
+  category: docs
+  turns: ["when does numpy slicing give a view instead of a copy?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-indexing-loc
+  category: docs
+  turns: ["what is the difference between loc and iloc?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-clustering
+  category: docs
+  turns: ["which clustering algorithms does scikit-learn's guide recommend for unknown cluster counts?"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: docs-quickstart-arange
+  category: docs
+  turns: ["show me from the numpy docs how arange differs from linspace"]
+  expected_evidence: docs
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+
+# --- mixed (5) ---
+- id: mixed-chunking-docs
+  category: mixed
+  turns: ["does our chunk_markdown follow the heading-splitting approach the pandas docs use for their user guide structure?"]
+  expected_evidence: mixed
+  acceptable_first_tools: [grep, read_file, search_docs]
+  mutation_expected: false
+- id: mixed-embed-batch
+  category: mixed
+  turns: ["is our embed_batch using the ollama embeddings API the way the ollama docs describe?"]
+  expected_evidence: mixed
+  acceptable_first_tools: [grep, read_file, search_docs]
+  mutation_expected: false
+- id: mixed-bm25-library
+  category: mixed
+  turns: ["compare how we call BM25Okapi with what the rank_bm25 docs recommend"]
+  expected_evidence: mixed
+  acceptable_first_tools: [grep, search_docs]
+  mutation_expected: false
+- id: mixed-chroma-where
+  category: mixed
+  turns: ["are we using chroma metadata filtering correctly in retrieve()?"]
+  expected_evidence: mixed
+  acceptable_first_tools: [read_file, grep, search_docs]
+  mutation_expected: false
+- id: mixed-tool-calling
+  category: mixed
+  turns: ["does our agent loop match the ollama tool-calling docs?"]
+  expected_evidence: mixed
+  acceptable_first_tools: [read_file, grep, search_docs]
+  mutation_expected: false
+
+# --- explicit attachment (3) ---
+- id: attach-rag-retrieve
+  category: attachment
+  turns: ["@src/rag.py:758-856 walk me through what this function returns"]
+  expected_evidence: project
+  acceptable_first_tools: [ANY]   # content is already attached pre-model
+  mutation_expected: false
+- id: attach-agent-loop
+  category: attachment
+  turns: ["@src/agent.py why does the loop stop after 8 iterations?"]
+  expected_evidence: project
+  acceptable_first_tools: [ANY]
+  mutation_expected: false
+- id: attach-plus-docs
+  category: attachment
+  turns: ["@src/rag.py:252-264 is this the right way to batch ollama embeddings per their docs?"]
+  expected_evidence: mixed
+  acceptable_first_tools: [search_docs, ANY]
+  mutation_expected: false
+
+# --- ambiguous follow-up (2) ---
+- id: follow-up-docs
+  category: ambiguous
+  turns:
+    - "how does pandas merging handle duplicate keys?"
+    - "and what does that mean for our manifest join logic?"
+  expected_evidence: mixed
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false
+- id: follow-up-project
+  category: ambiguous
+  turns:
+    - "where do we cap grep output?"
+    - "why that number?"
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file]
+  mutation_expected: false
+
+# --- mutation request (2) ---
+- id: mutate-rename-hint
+  category: mutation
+  turns: ["rename MAX_GREP_MATCHES to GREP_MATCH_CAP across the project"]
+  expected_evidence: project
+  acceptable_first_tools: [grep, read_file]
+  mutation_expected: true
+- id: mutate-fix-message
+  category: mutation
+  turns: ["fix the typo in the 'fresh enough — skipped' message to say 'fresh enough, skipped'"]
+  expected_evidence: project
+  acceptable_first_tools: [grep]
+  mutation_expected: true
+
+# --- negative / unanswerable (2) ---
+- id: neg-nonexistent-symbol
+  category: negative
+  turns: ["where is normalize_embeddings_v2 defined in this repo?"]
+  expected_evidence: refusal
+  acceptable_first_tools: [grep, list_files]
+  mutation_expected: false
+- id: neg-offtopic-docs
+  category: negative
+  turns: ["what does the django ORM docs say about select_related?"]
+  expected_evidence: refusal
+  acceptable_first_tools: [search_docs]
+  mutation_expected: false

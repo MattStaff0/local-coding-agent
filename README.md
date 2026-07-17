@@ -133,6 +133,19 @@ variable already exported in your shell always beats the file.
   entries use `expect: refusal`
 - run it before and after retrieval changes
 
+`src/eval_routing.py` measures tool/evidence routing (workstream 06):
+
+- runs 30 frozen prompts (`tests/routing_cases.yaml` — never tune them to
+  pass) against the live model and classifies each final answer's evidence
+  source from its citations
+- reports accuracy vs the ≥90% target, malformed-call rate, p95 iterations,
+  and safety-gate bypasses, plus error clusters and a go/no-go
+  recommendation per the decision bands (<80% → deterministic routing;
+  80–90% → decide from clusters; ≥90% → keep model choice)
+- reports land in `eval/routing/`, pinned to model digest, Ollama version,
+  and prompt revision; run it on the Ollama machine with
+  `LCA_EVAL_HARDWARE="..." python src/eval_routing.py`
+
 `src/fetch_docs.py` is the docs downloader:
 
 - reads `sources.yaml` (source name -> list of doc URLs)
