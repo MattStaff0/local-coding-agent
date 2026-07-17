@@ -4,12 +4,15 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import fs_policy
+
 # Output caps protect the small model's context window: a tool result that
 # does not fit in context is worse than no result at all.
 MAX_GREP_MATCHES = 40
 MAX_FILE_CHARS = 8_000
 
-SKIP_DIRS = {".git", "__pycache__", "chroma_db", ".venv", "node_modules"}
+# Kept as an alias: fs_policy is the single source of truth for skip rules.
+SKIP_DIRS = fs_policy.SKIP_DIRS
 TEXT_SUFFIXES = {".py", ".md", ".txt", ".yaml", ".yml", ".toml", ".json", ".cfg", ".ini"}
 
 
@@ -23,17 +26,29 @@ def _resolve_inside(root: Path, relative: str) -> Path:
     return target
 
 
-def _iter_text_files(base: Path):
-    """Yield readable text files under base, skipping caches and binaries."""
-    for path in sorted(base.rglob("*")):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
+def _deny_reason(root: Path, target: Path) -> str | None:
+    """The fs_policy deny reason for a resolved in-root path, if any.
 
+    Applied to reads AND writes: the deny list is how secrets stay out of
+    the model's context, and writing .env through the agent is equally out.
+    """
+    return fs_policy.denied(target.relative_to(root.resolve()))
+
+
+def _iter_text_files(root: Path, base: Path):
+    """Yield searchable text files under base, per the shared fs policy."""
+    for path in sorted(base.rglob("*")):
         if path.is_symlink():
             continue
 
-        if path.is_file() and path.suffix in TEXT_SUFFIXES:
-            yield path
+        if not (path.is_file() and path.suffix in TEXT_SUFFIXES):
+            continue
+
+        relative = path.relative_to(root)
+        if fs_policy.ignored(root, relative) or fs_policy.denied(relative):
+            continue
+
+        yield path
 
 
 def list_files(root: Path, subdir: str = ".") -> str:
@@ -44,7 +59,7 @@ def list_files(root: Path, subdir: str = ".") -> str:
         return f"No such directory: {subdir}"
 
     lines = [
-        path.relative_to(root).as_posix() for path in _iter_text_files(base)
+        path.relative_to(root).as_posix() for path in _iter_text_files(root, base)
     ]
 
     if not lines:
@@ -67,7 +82,7 @@ def grep_files(root: Path, pattern: str, subdir: str = ".") -> str:
 
     matches: list[str] = []
 
-    for path in _iter_text_files(base):
+    for path in _iter_text_files(root, base):
         text = path.read_text(encoding="utf-8", errors="replace")
 
         for line_number, line in enumerate(text.splitlines(), start=1):
@@ -98,6 +113,10 @@ def read_file(root: Path, path: str, start_line: int = 1) -> str:
 
     if not target.is_file():
         return f"No such file: {path}"
+
+    reason = _deny_reason(root, target)
+    if reason:
+        return f"{path} is not readable ({reason})."
 
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     picked: list[str] = []
@@ -137,6 +156,10 @@ def preview_edit(root: Path, path: str, old_text: str, new_text: str) -> dict:
     if not target.is_file():
         return {"error": f"No such file: {path}"}
 
+    reason = _deny_reason(root, target)
+    if reason:
+        return {"error": f"{path} is not editable ({reason})."}
+
     content = target.read_text(encoding="utf-8")
     count = content.count(old_text)
 
@@ -156,12 +179,18 @@ def preview_edit(root: Path, path: str, old_text: str, new_text: str) -> dict:
 
 def preview_write(root: Path, path: str, content: str) -> dict:
     target = _resolve_inside(root, path)
+    reason = _deny_reason(root, target)
+    if reason:
+        return {"error": f"{path} is not writable ({reason})."}
     old = target.read_text(encoding="utf-8") if target.is_file() else ""
     return {"diff": _unified_diff(path, old, content), "new_content": content}
 
 
 def apply_content(root: Path, path: str, new_content: str) -> str:
     target = _resolve_inside(root, path)
+    reason = _deny_reason(root, target)
+    if reason:
+        raise ValueError(f"{path} is not writable ({reason}).")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new_content, encoding="utf-8")
     return f"Wrote {path}"

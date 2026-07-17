@@ -11,6 +11,7 @@ from typing import Any
 import chromadb.errors
 import httpx
 
+import attachments as attachments_module
 import manifest as manifest_module
 import mcp_client
 import paths
@@ -53,11 +54,21 @@ def run_agent_turn(
     renderer,
     confirm,
     mcp,
+    cli_contexts: tuple[str, ...] = (),
 ) -> AgentTurn:
-    """Run and render one agent turn for every free-form CLI entry path."""
+    """Run and render one agent turn for every free-form CLI entry path.
+
+    Attachments (@path in the prompt, --context flags) resolve here, before
+    the model call; an AttachmentError propagates to the caller and nothing
+    reaches the model.
+    """
+    prepared = attachments_module.prepare_turn(session.root, question, cli_contexts)
+    for label in prepared.labels:
+        renderer.show_message(f"Attached: {label}")
+
     message_start = len(session.messages)
     answer, trace = run_agent(
-        question,
+        prepared.question,
         session=session,
         confirm=confirm,
         mcp=mcp,
@@ -297,6 +308,8 @@ def start_mcp(root: Path | None = None):
 HELP_TEXT = """\
 Every free-form prompt uses the agent over current saved files and docs.
 Writes and commands always require confirmation.
+Attach saved files (not editor buffers): @path, @path:80, @path:80-130
+  in any prompt, or lca --context <path[:a-b]> "question" one-shot.
 Commands:
   /help             show this help
   /status           show root, session size, and docs scope
@@ -561,6 +574,11 @@ def chat_loop(renderer=None, read_input=None, agent_root: Path | None = None) ->
                 mcp_manager.stop()
             renderer.show_message("Goodbye.")
             return
+        except attachments_module.AttachmentError as error:
+            # User-fixable: bad path, denied file, invalid range. The model
+            # was never called; the session is untouched.
+            renderer.show_error(str(error))
+            continue
         except Exception as error:
             renderer.show_error(describe_error(error))
             continue
@@ -644,28 +662,34 @@ def main() -> None:
         return
 
     selected_root: Path | None = None
-    if args and args[0] == "--root":
+    contexts: list[str] = []
+    while args and args[0] in {"--root", "--context"}:
+        flag = args[0]
         if len(args) < 2:
-            print("Usage: lca --root <path>")
+            print(f"Usage: lca {flag} <path>")
             raise SystemExit(2)
-        try:
-            selected_root = canonical_root(args[1])
-        except ValueError as error:
-            print(f"--root {error}")
-            raise SystemExit(2)
+        if flag == "--root":
+            try:
+                selected_root = canonical_root(args[1])
+            except ValueError as error:
+                print(f"--root {error}")
+                raise SystemExit(2)
+        else:
+            contexts.append(args[1])
         args = args[2:]
-        if not args:
-            chat_loop(agent_root=selected_root)
-            return
 
     if not args:
-        chat_loop()
+        if contexts:
+            # --context attaches to a one-shot question; chat turns use @path.
+            print('--context needs a question: lca --context <path> "question"')
+            raise SystemExit(2)
+        chat_loop(agent_root=selected_root)
         return
 
     if args[0].startswith("-"):
         # Anything else would be silently sent to the model as a "question".
         print(f'Unknown option: {args[0]} — usage: lca | lca "question" | '
-              "lca doctor | lca --root <path>")
+              "lca doctor | lca --root <path> | lca --context <path> \"question\"")
         raise SystemExit(2)
 
     # This keeps the old one-shot usage:
@@ -683,7 +707,11 @@ def main() -> None:
             renderer=renderer,
             confirm=None,
             mcp=mcp_manager,
+            cli_contexts=tuple(contexts),
         )
+    except attachments_module.AttachmentError as error:
+        print(str(error))
+        raise SystemExit(2)
     except Exception as error:
         renderer.show_error(describe_error(error))
         raise SystemExit(1)
