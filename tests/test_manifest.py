@@ -32,9 +32,16 @@ def test_concurrent_manifest_writes_do_not_collide(tmp_path, monkeypatch):
     path = tmp_path / "manifest.jsonl"
     original_replace = Path.replace
     barrier = threading.Barrier(2)
+    replace_lock = threading.Lock()
+    replace_calls = 0
 
     def synchronized_replace(self, target):
-        barrier.wait(timeout=5)
+        nonlocal replace_calls
+        with replace_lock:
+            replace_calls += 1
+            synchronize = replace_calls <= 2
+        if synchronize:
+            barrier.wait(timeout=5)
         return original_replace(self, target)
 
     monkeypatch.setattr(Path, "replace", synchronized_replace)

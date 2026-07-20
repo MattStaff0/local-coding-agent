@@ -1,4 +1,5 @@
 import difflib
+import os
 import re
 import shlex
 import subprocess
@@ -38,7 +39,12 @@ def _deny_reason(root: Path, target: Path) -> str | None:
 def _iter_text_files(root: Path, base: Path):
     """Yield searchable text files under base, per the shared fs policy."""
     for path in sorted(base.rglob("*")):
-        if path.is_symlink():
+        ancestors = (path, *path.parents)
+        if any(
+            fs_policy.is_reparse_or_symlink(ancestor)
+            for ancestor in ancestors
+            if ancestor.is_relative_to(base)
+        ):
             continue
 
         if not (path.is_file() and path.suffix in TEXT_SUFFIXES):
@@ -204,11 +210,17 @@ ALLOWED_COMMANDS = {"pytest", "python"}
 def run_command(root: Path, command: str, timeout: int = 120) -> str:
     """Run one allowlisted command inside root; every failure is a string."""
     try:
-        argv = shlex.split(command)
+        argv = shlex.split(command, posix=(os.name != "nt"))
     except ValueError as error:
         return f"Could not parse command: {error}"
 
-    if not argv or Path(argv[0]).name not in ALLOWED_COMMANDS:
+    program = Path(argv[0]).name if argv else ""
+    if os.name == "nt":
+        program = program.lower()
+        if program.endswith(".exe"):
+            program = program[:-4]
+
+    if not argv or program not in ALLOWED_COMMANDS:
         allowed = ", ".join(sorted(ALLOWED_COMMANDS))
         return f"Command not allowed: '{command}'. Allowed: {allowed}."
 

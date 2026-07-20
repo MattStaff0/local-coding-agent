@@ -12,6 +12,8 @@ subset (per-line patterns, `dir/` anchors, comments). `!` negation is
 unsupported and skipped — documented in the README.
 """
 import fnmatch
+import os
+import stat as _stat
 from pathlib import Path
 
 # Directories no tool should ever descend into, .gitignore or not.
@@ -39,6 +41,18 @@ _DENY_SUFFIXES = {
     ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".whl",
     ".so", ".dylib", ".dll", ".bin",
 }
+
+
+def is_reparse_or_symlink(path) -> bool:
+    """True for POSIX symlinks and Windows reparse points, including junctions."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if _stat.S_ISLNK(st.st_mode):
+        return True
+    attributes = getattr(st, "st_file_attributes", 0)
+    return bool(attributes & getattr(_stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 def denied(relative: Path) -> str | None:
