@@ -1,4 +1,5 @@
 import difflib
+import os
 import re
 import shlex
 import subprocess
@@ -209,7 +210,7 @@ ALLOWED_COMMANDS = {"pytest", "python"}
 def run_command(root: Path, command: str, timeout: int = 120) -> str:
     """Run one allowlisted command inside root; every failure is a string."""
     try:
-        argv = shlex.split(command)
+        argv = shlex.split(command, posix=(os.name != "nt"))
     except ValueError as error:
         return f"Could not parse command: {error}"
 
