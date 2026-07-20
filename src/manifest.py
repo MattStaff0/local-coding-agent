@@ -7,8 +7,13 @@ ingest; written atomically so a crash mid-write cannot leave a torn file.
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+
+_REPLACE_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_SECONDS = 0.05
 
 
 def write_manifest(records: list[dict[str, Any]], path: Path) -> None:
@@ -22,7 +27,14 @@ def write_manifest(records: list[dict[str, Any]], path: Path) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             for record in records:
                 f.write(json.dumps(record) + "\n")
-        tmp.replace(path)
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_RETRY_DELAY_SECONDS)
     except Exception:
         tmp.unlink(missing_ok=True)
         raise

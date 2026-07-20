@@ -236,6 +236,15 @@ class TestResolve:
         with pytest.raises(AttachmentError, match="binary or non-UTF-8"):
             attachments.resolve_attachment(root, AttachmentSpec("blob.py", None, None))
 
+    def test_windows_fallback_reads_when_o_nofollow_is_unavailable(self, root, monkeypatch):
+        monkeypatch.delattr(attachments.os, "O_NOFOLLOW", raising=False)
+
+        attachment = attachments.resolve_attachment(
+            root, AttachmentSpec("src/train.py", 1, 1)
+        )
+
+        assert attachment.content == "1: line 1"
+
 
 # --- notebooks ---
 

@@ -13,6 +13,7 @@ import fnmatch
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -297,12 +298,40 @@ def _resolve_target(root: Path, spec: AttachmentSpec) -> tuple[Path, str]:
 
 
 def _read_text_strict(target: Path, display: str) -> str:
-    # O_NOFOLLOW: the path was symlink-free when we validated it; refuse to
-    # follow one swapped in between validation and read (TOCTOU hardening).
+    """Read a resolved attachment without weakening its TOCTOU protection.
+
+    ``O_NOFOLLOW`` closes the gap between validation and open on POSIX. Windows
+    lacks that flag, so pair an immediate pre-open ``lstat`` with a post-open
+    identity check instead. ``O_BINARY`` keeps raw reads raw on Windows: without
+    it the CRT can translate CRLF and treat Ctrl-Z as EOF before the binary
+    checks below see the bytes.
+    """
+    have_nofollow = hasattr(os, "O_NOFOLLOW")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+
     try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+        pre = None
+        if not have_nofollow:
+            pre = os.lstat(target)
+            if stat.S_ISLNK(pre.st_mode):
+                raise OSError(f"{target} is a symlink")
+        fd = os.open(target, flags)
     except OSError as error:
         raise AttachmentError(f"{display}: cannot read ({error})")
+
+    if not have_nofollow:
+        try:
+            same = os.path.samestat(pre, os.fstat(fd))
+        except OSError:
+            same = False
+        if not same:
+            os.close(fd)
+            raise AttachmentError(f"{display}: changed while opening (refusing)")
+
     with os.fdopen(fd, "rb") as handle:
         data = handle.read()
 
