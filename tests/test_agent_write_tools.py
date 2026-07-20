@@ -89,3 +89,33 @@ def test_run_command_preserves_posix_path_arguments(tmp_path, monkeypatch):
 
     assert "exit code 0" in result
     assert captured == ["pytest", "tests/test_x.py"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows executable matching")
+@pytest.mark.parametrize(
+    "command",
+    ["python.exe script.py", "pytest.exe tests/test_x.py", "Python.EXE script.py"],
+)
+def test_run_command_allows_windows_executable_names(tmp_path, monkeypatch, command):
+    captured = []
+
+    def fake_run(argv, **kwargs):
+        captured.extend(argv)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("agent_tools.subprocess.run", fake_run)
+
+    result = run_command(tmp_path, command)
+
+    assert "exit code 0" in result
+    assert captured[0] == command.split()[0]
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["pip install x", "powershell -Command x", "cmd /c x", "python3.11.exe ../x.py"],
+)
+def test_run_command_rejects_non_allowlisted_executables(tmp_path, command):
+    result = run_command(tmp_path, command)
+
+    assert "not allowed" in result

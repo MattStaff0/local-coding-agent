@@ -214,7 +214,13 @@ def run_command(root: Path, command: str, timeout: int = 120) -> str:
     except ValueError as error:
         return f"Could not parse command: {error}"
 
-    if not argv or Path(argv[0]).name not in ALLOWED_COMMANDS:
+    program = Path(argv[0]).name if argv else ""
+    if os.name == "nt":
+        program = program.lower()
+        if program.endswith(".exe"):
+            program = program[:-4]
+
+    if not argv or program not in ALLOWED_COMMANDS:
         allowed = ", ".join(sorted(ALLOWED_COMMANDS))
         return f"Command not allowed: '{command}'. Allowed: {allowed}."
 
