@@ -11,6 +11,7 @@ from paths import DB_DIR, DOCS_DIR, MANIFEST_PATH, PROJECT_ROOT
 import chromadb
 import chromadb.errors
 import httpx
+import fs_policy
 import manifest as manifest_module
 import ollama
 import rerank
@@ -507,7 +508,7 @@ def index_code(repo_dir: Path, repo_name: str | None = None, full: bool = False)
         path
         for path in repo_dir.rglob("*.py")
         if not any(part in SKIP_DIRS for part in path.relative_to(repo_dir).parts)
-        and not path.is_symlink()
+        and not fs_policy.is_reparse_or_symlink(path)
     )
 
     collection = get_client().get_or_create_collection(

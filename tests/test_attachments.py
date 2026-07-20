@@ -5,12 +5,38 @@ every filesystem shape is injectable. Resolution tests use real tmp_path
 roots because sandboxing IS filesystem behavior.
 """
 import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
+import agent_tools
 import attachments
 from attachments import AttachmentError, AttachmentSpec
+
+
+def _can_create_junction() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            target.mkdir()
+            link = Path(directory) / "link"
+            return subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                check=False,
+            ).returncode == 0
+    except OSError:
+        return False
+
+
+requires_junctions = pytest.mark.skipif(
+    not _can_create_junction(), reason="NTFS junction creation unavailable"
+)
 
 
 # --- parsing ---
@@ -206,6 +232,26 @@ class TestResolve:
             attachments.resolve_attachment(
                 root, AttachmentSpec("shortcut/train.py", None, None)
             )
+
+    @requires_junctions
+    def test_junctions_are_rejected_and_skipped(self, root):
+        link = root / "shortcut"
+        assert subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(root / "src")],
+            capture_output=True,
+            check=False,
+        ).returncode == 0
+
+        assert attachments.fs_policy.is_reparse_or_symlink(link)
+        with pytest.raises(AttachmentError, match="symlink"):
+            attachments.resolve_attachment(
+                root, AttachmentSpec("shortcut/train.py", None, None)
+            )
+
+        assert all(
+            not path.is_relative_to(link)
+            for path in agent_tools._iter_text_files(root, root)
+        )
 
     def test_denied_file_rejected_even_explicitly(self, root):
         (root / ".env").write_text("KEY=value\n")

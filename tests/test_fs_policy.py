@@ -49,6 +49,16 @@ def test_denied_reason_names_the_rule():
     assert ".env" in reason
 
 
+def test_is_reparse_or_symlink_is_false_for_regular_paths(tmp_path):
+    regular_file = tmp_path / "regular.py"
+    regular_file.write_text("x = 1\n")
+    regular_directory = tmp_path / "regular-dir"
+    regular_directory.mkdir()
+
+    assert not fs_policy.is_reparse_or_symlink(regular_file)
+    assert not fs_policy.is_reparse_or_symlink(regular_directory)
+
+
 # --- ignored(): .gitignore + built-ins ---
 
 

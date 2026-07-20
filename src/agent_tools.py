@@ -38,7 +38,12 @@ def _deny_reason(root: Path, target: Path) -> str | None:
 def _iter_text_files(root: Path, base: Path):
     """Yield searchable text files under base, per the shared fs policy."""
     for path in sorted(base.rglob("*")):
-        if path.is_symlink():
+        ancestors = (path, *path.parents)
+        if any(
+            fs_policy.is_reparse_or_symlink(ancestor)
+            for ancestor in ancestors
+            if ancestor.is_relative_to(base)
+        ):
             continue
 
         if not (path.is_file() and path.suffix in TEXT_SUFFIXES):

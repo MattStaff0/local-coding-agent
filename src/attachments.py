@@ -242,7 +242,7 @@ def _reject_symlinked_parents(root: Path, relative: Path) -> None:
     current = root
     for part in relative.parts[:-1]:
         current = current / part
-        if current.is_symlink():
+        if fs_policy.is_reparse_or_symlink(current):
             raise AttachmentError(
                 f"{relative.as_posix()}: refusing to follow directory "
                 f"symlink '{current.name}' (root: {root})"
