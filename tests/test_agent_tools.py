@@ -1,8 +1,25 @@
+import tempfile
 from pathlib import Path
 
 import pytest
 
 import agent_tools
+
+
+def _can_symlink() -> bool:
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            link = Path(directory) / "link"
+            link.symlink_to(Path(directory))
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="symlink creation unavailable (Windows: needs Developer Mode/elevation)",
+)
 
 
 @pytest.fixture()
@@ -111,6 +128,7 @@ def test_read_file_reports_start_line_past_the_end(project: Path) -> None:
     assert "has 2 lines" in result
 
 
+@requires_symlinks
 def test_symlink_files_are_excluded_from_list_and_grep(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
