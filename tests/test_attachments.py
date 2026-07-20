@@ -39,6 +39,22 @@ requires_junctions = pytest.mark.skipif(
 )
 
 
+def _can_symlink() -> bool:
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            link = Path(directory) / "link"
+            link.symlink_to(Path(directory))
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="symlink creation unavailable (Windows: needs Developer Mode/elevation)",
+)
+
+
 # --- parsing ---
 
 
@@ -208,6 +224,7 @@ class TestResolve:
                 root, AttachmentSpec("../secrets.txt", None, None)
             )
 
+    @requires_symlinks
     def test_file_symlink_escaping_root_rejected(self, root, tmp_path_factory):
         outside = tmp_path_factory.mktemp("elsewhere") / "real.py"
         outside.write_text("x = 1\n")
@@ -216,6 +233,7 @@ class TestResolve:
         with pytest.raises(AttachmentError, match="outside"):
             attachments.resolve_attachment(root, AttachmentSpec("link.py", None, None))
 
+    @requires_symlinks
     def test_file_symlink_inside_root_allowed(self, root):
         (root / "alias.py").symlink_to(root / "src" / "train.py")
 
@@ -225,6 +243,7 @@ class TestResolve:
 
         assert "1: line 1" in attachment.content
 
+    @requires_symlinks
     def test_directory_symlink_parent_rejected_even_when_target_in_root(self, root):
         (root / "shortcut").symlink_to(root / "src")
 
